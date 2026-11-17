@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14202b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Осипов">
+<title>Торговый помощник Осипова</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+:root{
+  /* Торговый стол: вкладки сверху, рабочая зона — проверки и цифры рядом; на телефоне всё в одну колонку. */
+  --paper:#f4f6f8; --panel:#ffffff; --ink:#14202b; --muted:#5b6b7a; --line:#d8dee5;
+  --accent:#1d4ed8; --accent-soft:#e3eafc; --on-accent:#ffffff;
+  --up:#0f7b4b; --up-soft:#e2f4ea; --down:#c0352b; --down-soft:#fbe7e5; --warn:#a65f00; --warn-soft:#fdf0d9;
+  --font-body:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --r:10px; color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root{--paper:#0e151c; --panel:#16202a; --ink:#e4ebf2; --muted:#93a3b3; --line:#2a3744;
+    --accent:#7aa2ff; --accent-soft:#1c2a47; --on-accent:#0e151c;
+    --up:#4cc68a; --up-soft:#123326; --down:#ff7b70; --down-soft:#3a1c1a; --warn:#f0b14a; --warn-soft:#3a2c12; color-scheme: dark;}
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font:15px/1.5 var(--font-body);padding-bottom:env(safe-area-inset-bottom)}
+h1,h2,h3{text-wrap:balance;margin:0}
+h1{font-size:18px;font-weight:700}
+h2{font-size:17px;font-weight:600}
+h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.num,.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+header{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top)}
+.bar{max-width:1280px;margin:0 auto;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+nav{display:flex;gap:2px;margin-left:auto;overflow-x:auto;max-width:100%}
+nav a{padding:7px 11px;border-radius:8px;color:var(--muted);text-decoration:none;font-weight:600;font-size:14px;white-space:nowrap}
+nav a.on{background:var(--accent-soft);color:var(--accent)}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.status{font-size:12px;display:inline-flex;gap:6px;align-items:center;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block;flex:none}
+.dot.ok{background:var(--up)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--down)}
+main{max-width:1280px;margin:0 auto;padding:16px}
+.view{display:none} .view.on{display:block}
+.grid2{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;align-items:start}
+.grid-scan{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.grid2,.grid-scan{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px}
+.stack{display:flex;flex-direction:column;gap:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.between{justify-content:space-between}
+.muted{color:var(--muted)} .small{font-size:13px} .note{font-size:13px;color:var(--muted)}
+.chk-group{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:4px}
+.chk-group:first-of-type{border-top:0;padding-top:0}
+.chk{display:flex;gap:10px;align-items:flex-start;padding:6px;border-radius:8px;cursor:pointer}
+.chk input{margin-top:3px;width:18px;height:18px;accent-color:var(--accent);flex:none}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;background:var(--paper);color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+.tag.crit,.tag.down{background:var(--down-soft);color:var(--down);border-color:transparent}
+.tag.up{background:var(--up-soft);color:var(--up);border-color:transparent}
+.tag.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.tag.acc{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted);min-width:0}
+label.f span{font-weight:600}
+input[type=number],input[type=text],input[type=date],input[type=password],input[type=search],select,textarea{font:inherit;font-size:16px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;min-width:0}
+input[type=number]{font-family:var(--font-mono)}
+textarea{min-height:64px;resize:vertical}
+.fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.fields.wide{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;flex-wrap:wrap}
+.seg button{border:0;background:var(--panel);color:var(--muted);padding:7px 12px;font:inherit;font-weight:600;cursor:pointer}
+.seg button.on{background:var(--accent-soft);color:var(--accent)}
+.seg button.on.long{background:var(--up-soft);color:var(--up)}
+.seg button.on.short{background:var(--down-soft);color:var(--down)}
+button.btn,a.btn{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 14px;border-radius:8px;cursor:pointer;text-decoration:none;display:inline-block}
+button.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+button.btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+button.btn.danger{color:var(--down)}
+button.btn:disabled{opacity:.5;cursor:default}
+.out{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+.kv{border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:var(--paper)}
+.kv .k{font-size:12px;color:var(--muted)}
+.kv .v{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:17px;font-weight:600}
+.kv.big .v{font-size:22px}
+.verdict{border-radius:var(--r);padding:12px 14px;border-left:5px solid var(--muted);background:var(--panel)}
+.verdict.ok{border-color:var(--up);background:var(--up-soft)}
+.verdict.wait{border-color:var(--warn);background:var(--warn-soft)}
+.verdict.no{border-color:var(--down);background:var(--down-soft)}
+.verdict ul{margin:6px 0 0;padding-left:18px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:700;background:var(--paper);white-space:nowrap}
+td.n,th.n{text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+tr.ex td{color:var(--muted);font-style:italic}
+.pos{color:var(--up)} .neg{color:var(--down)}
+.empty{padding:22px;text-align:center;color:var(--muted)}
+.edit-panel{border:2px solid var(--accent)}
+/* сканер */
+.hits{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
+.hit{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--muted);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:6px;cursor:pointer;text-align:left;font:inherit;color:inherit}
+.hit:hover{border-color:var(--accent)}
+.hit.long{border-left-color:var(--up)} .hit.short{border-left-color:var(--down)}
+.hit .tk{font-size:17px;font-weight:700}
+.hit .nm{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hit .nums{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-family:var(--font-mono);font-size:13px}
+.hit .nums div span{display:block;font-family:var(--font-body);font-size:11px;color:var(--muted)}
+.opts{display:flex;flex-direction:column;gap:6px}
+.opts label{display:flex;gap:8px;align-items:flex-start;font-size:14px;cursor:pointer}
+.opts input{width:17px;height:17px;accent-color:var(--accent);margin-top:2px;flex:none}
+.progress{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
+.progress div{height:100%;background:var(--accent);width:0}
+/* окно графика */
+.modal{position:fixed;inset:0;z-index:50;background:rgba(10,15,20,.55);display:none;align-items:stretch;justify-content:center;padding:24px}
+.modal.on{display:flex}
+.sheet{background:var(--panel);border-radius:var(--r);width:min(1180px,100%);display:flex;flex-direction:column;overflow:hidden}
+.sheet-h{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.sheet-b{display:grid;grid-template-columns:minmax(0,1fr) 320px;min-height:0;flex:1}
+.chart-box{min-height:380px;position:relative}
+.chart-side{border-left:1px solid var(--line);padding:14px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+@media (max-width:820px){
+  .modal{padding:0}
+  .sheet{border-radius:0;padding-top:env(safe-area-inset-top)}
+  .sheet-b{grid-template-columns:1fr;overflow:auto}
+  .chart-box{height:58vh;min-height:300px}
+  .chart-side{border-left:0;border-top:1px solid var(--line)}
+}
+details.sec{border:1px solid var(--line);border-radius:var(--r);background:var(--panel)}
+details.sec>summary{cursor:pointer;padding:13px 16px;font-weight:600;font-size:16px;list-style:none;display:flex;justify-content:space-between;gap:10px}
+details.sec>summary::after{content:"+";color:var(--muted);font-family:var(--font-mono)}
+details.sec[open]>summary::after{content:"−"}
+details.sec .body{padding:0 16px 16px;max-width:78ch}
+.body ul,.body ol{margin:.3em 0;padding-left:20px}
+.body li{margin:.2em 0}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.card{border:1px solid var(--line);border-radius:var(--r);padding:12px;background:var(--paper)}
+.card svg{width:100%;height:auto;display:block}
+.card h4{margin:6px 0 2px;font-size:14px}
+.card p{margin:0;font-size:13px;color:var(--muted)}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:8px;font-size:14px;z-index:60;display:none;max-width:90vw}
+.toast.on{display:block}
+.copybox{width:100%;min-height:120px;font-family:var(--font-mono);font-size:12px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>Торговый помощник Осипова</h1>
+    <span class="status" id="syncStatus"><span class="dot"></span><span>Журнал: локально</span></span>
+    <nav aria-label="Разделы">
+      <a href="#scan" data-v="scan">Сканер</a>
+      <a href="#trade" data-v="trade">Сделка</a>
+      <a href="#plan" data-v="plan">Watchlist</a>
+      <a href="#journal" data-v="journal">Журнал</a>
+      <a href="#guide" data-v="guide">Шпаргалка</a>
+      <a href="#settings" data-v="settings">Настройки</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<!-- ===== СКАНЕР ===== -->
+<section class="view" id="v-scan">
+  <div class="grid-scan">
+    <aside class="panel stack" id="scanOpts">
+      <div class="row between"><h2>Сканер</h2><span class="note" id="dataInfo">данные: загрузка…</span></div>
+      <button class="btn pri" type="button" id="runScan">Сканировать рынок</button>
+      <div class="progress" aria-hidden="true"><div id="scanProg"></div></div>
+      <details id="scanDetails" open><summary class="small" style="cursor:pointer;font-weight:600">Настройки сканера</summary>
+      <div class="stack small" style="margin-top:10px">
+        <div><h3>Таймфрейм паттерна</h3>
+          <div class="seg" role="group" aria-label="Таймфрейм"><button type="button" data-o-tf="D">День</button><button type="button" data-o-tf="W">Неделя</button></div></div>
+        <div><h3>Направление</h3>
+          <div class="seg" role="group" aria-label="Направление"><button type="button" data-o-dir="long">Покупки</button><button type="button" data-o-dir="short">Шорты</button><button type="button" data-o-dir="both">Оба</button></div></div>
+        <div><h3>Сетапы</h3><div class="opts" id="oSetups"></div></div>
+        <div><h3>Где цена</h3><div class="opts">
+          <label><input type="checkbox" id="oZoneIn"> В зоне входа — ищу триггер</label>
+          <label><input type="checkbox" id="oZoneNear"> На подходе (до 4 ATR) — поставить алерт</label></div></div>
+        <div><h3>Фильтры</h3><div class="opts">
+          <label><input type="checkbox" id="oMn"> Месячный тренд не против сделки</label>
+          <label><input type="checkbox" id="oW"> Недельная тенденция не против (для дневки)</label>
+          <label><input type="checkbox" id="oEarn"> Без отчёта в ближайшие 14 дней</label>
+          <label><input type="checkbox" id="oTrg"> Только со свечным триггером</label></div></div>
+        <div class="fields">
+          <label class="f"><span>R:R не ниже</span><select id="oRR"><option value="0">любой</option><option value="1.5">1 : 1,5</option><option value="2">1 : 2</option><option value="3">1 : 3</option></select></label>
+          <label class="f"><span>Капитализация от, млрд $</span><input type="number" id="oCap" min="0" step="1"></label>
+          <label class="f" style="grid-column:1/-1"><span>Сектор</span><select id="oSector"><option value="">все</option></select></label>
+        </div>
+      </div>
+      </details>
+    </aside>
+    <div class="stack">
+      <div class="row between">
+        <div class="row"><input type="search" id="tickerSearch" placeholder="Открыть график: тикер" style="max-width:220px" autocomplete="off" autocapitalize="characters"><button class="btn" type="button" id="openTicker">Открыть</button></div>
+        <span class="note" id="scanSummary"></span>
+      </div>
+      <div id="hits" class="hits"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== СДЕЛКА ===== -->
+<section class="view" id="v-trade">
+  <div class="grid2">
+    <div class="panel stack">
+      <div class="row between"><h2>Чек-лист сделки</h2><button class="btn ghost small" id="resetChecks" type="button">Сбросить отметки</button></div>
+      <div class="fields wide">
+        <label class="f"><span>Тикер</span><input type="text" id="t_ticker" placeholder="например, MSFT" autocapitalize="characters"></label>
+        <label class="f"><span>Рабочий ТФ входа</span><select id="t_tf"><option>D</option><option>W</option><option>MN</option><option>H4</option></select></label>
+        <label class="f"><span>Сетап (область входа)</span><select id="t_setup"></select></label>
+        <label class="f"><span>Триггер (ТВХ)</span><select id="t_trigger"></select></label>
+      </div>
+      <div id="checklist" class="stack"></div>
+    </div>
+    <div class="stack">
+      <div class="panel stack">
+        <div class="row between"><h2>Калькулятор позиции</h2>
+          <div class="seg" role="group" aria-label="Направление"><button type="button" id="dirLong" class="on long">Покупка</button><button type="button" id="dirShort" class="short">Шорт</button></div></div>
+        <div class="fields">
+          <label class="f"><span>Депозит, $</span><input type="number" id="c_dep" step="any" min="0"></label>
+          <label class="f"><span>Риск, %</span><input type="number" id="c_risk" step="0.05" min="0"></label>
+          <label class="f"><span>Комиссия, % за сторону</span><input type="number" id="c_comm" step="0.01" min="0"></label>
+          <label class="f"><span>Мин. комиссия, $</span><input type="number" id="c_fix" step="any" min="0"></label>
+          <label class="f"><span>Вход</span><input type="number" id="c_entry" step="any"></label>
+          <label class="f"><span>Стоп</span><input type="number" id="c_stop" step="any"></label>
+          <label class="f"><span>Тейк (уровень)</span><input type="number" id="c_take" step="any"></label>
+          <label class="f"><span>Тейк ставлю на</span><select id="c_tp"><option value="0.8">80% пути</option><option value="1">100% (уровень)</option></select></label>
+        </div>
+        <div class="note" id="calcNote">Пример: замените цифры своими.</div>
+        <div class="out" id="calcOut"></div>
+      </div>
+      <div class="verdict" id="verdict"></div>
+      <div class="row"><button class="btn pri" type="button" id="toJournal">Записать в журнал</button><span class="note">Попадёт в журнал со статусом «открыта».</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== WATCHLIST ===== -->
+<section class="view" id="v-plan">
+  <div class="stack">
+    <div class="row between"><h2>Watchlist и алерты</h2><button class="btn" type="button" id="newPlan">Добавить бумагу</button></div>
+    <p class="note" id="alertInfo">Алерты проверяются каждые ~30 минут в часы торгов США и приходят в Telegram (если он настроен в «Настройках»).</p>
+    <div id="planEdit"></div>
+    <div class="tbl-wrap"><table id="pTable"></table></div>
+  </div>
+</section>
+
+<!-- ===== ЖУРНАЛ ===== -->
+<section class="view" id="v-journal">
+  <div class="stack">
+    <div class="row between"><h2>Торговый журнал</h2>
+      <div class="row">
+        <div class="seg" role="group" aria-label="Фильтр"><button type="button" data-jf="all" class="on">Все</button><button type="button" data-jf="open">Открытые</button><button type="button" data-jf="closed">Закрытые</button></div>
+        <button class="btn" type="button" id="newTrade">Новая запись</button>
+        <button class="btn" type="button" id="copyCsv">Скопировать CSV</button>
+      </div></div>
+    <div class="tiles" id="jStats"></div>
+    <div id="editWrap"></div>
+    <div class="tbl-wrap"><table id="jTable"></table></div>
+    <div id="csvBox"></div>
+    <div class="panel stack"><h3>Сетапы: что оставить, что убрать</h3>
+      <p class="note">Смысл журнала по Осипову — убрать минусы. Сетап с отрицательной суммой R после 5+ сделок — кандидат на удаление.</p>
+      <div class="tbl-wrap"><table id="jSetups"></table></div></div>
+  </div>
+</section>
+
+<!-- ===== ШПАРГАЛКА ===== -->
+<section class="view" id="v-guide"><div class="stack" id="guideBody"></div></section>
+
+<!-- ===== НАСТРОЙКИ ===== -->
+<section class="view" id="v-settings">
+  <div class="grid2">
+    <div class="panel stack">
+      <h2>Синхронизация ПК и телефона</h2>
+      <p class="note">Журнал и watchlist хранятся в вашем закрытом репозитории на GitHub. Ключ доступа вводится один раз на каждом устройстве и остаётся только в этом браузере.</p>
+      <div class="fields wide">
+        <label class="f"><span>Владелец (логин GitHub)</span><input type="text" id="s_owner" autocapitalize="off" autocomplete="off"></label>
+        <label class="f"><span>Репозиторий журнала</span><input type="text" id="s_repo" autocapitalize="off" autocomplete="off"></label>
+        <label class="f"><span>Репозиторий сканера</span><input type="text" id="s_scan" autocapitalize="off" autocomplete="off"></label>
+        <label class="f"><span>Ключ доступа (fine-grained token)</span><input type="password" id="s_token" autocomplete="off" placeholder="github_pat_…"></label>
+      </div>
+      <div class="row"><button class="btn pri" type="button" id="saveSync">Сохранить и подключить</button><button class="btn ghost" type="button" id="forgetToken">Удалить ключ с этого устройства</button></div>
+      <div class="note" id="syncMsg"></div>
+      <details class="sec"><summary>Как получить ключ</summary><div class="body small"><ol>
+        <li>github.com → аватар → Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token.</li>
+        <li>Expiration — 1 год. Repository access → <b>Only select repositories</b> → выберите журнал и сканер.</li>
+        <li>Permissions → Repository permissions: <b>Contents — Read and write</b>, <b>Actions — Read and write</b>.</li>
+        <li>Generate token, скопируйте и вставьте сюда. На телефоне повторите вставку (можно переслать себе в «Избранное» Telegram и удалить сообщение).</li></ol></div></details>
+    </div>
+    <div class="stack">
+      <div class="panel stack">
+        <h2>Данные и алерты</h2>
+        <div class="note" id="metaInfo"></div>
+        <div class="row"><button class="btn" type="button" id="refreshData">Обновить котировки сейчас</button><button class="btn" type="button" id="checkAlerts">Проверить алерты сейчас</button></div>
+        <div class="note" id="actMsg">Котировки обновляются сами каждый вечер после закрытия рынка США. Ручное обновление занимает 15–25 минут.</div>
+      </div>
+      <div class="panel stack">
+        <h2>Telegram</h2>
+        <div class="note" id="tgInfo">Статус: неизвестен — подключите синхронизацию.</div>
+        <details class="sec"><summary>Как подключить</summary><div class="body small"><ol>
+          <li>В Telegram откройте @BotFather → <code>/newbot</code> → получите токен.</li>
+          <li>Напишите своему боту <code>/start</code>.</li>
+          <li>На GitHub в репозитории журнала: Settings → Secrets and variables → Actions → New repository secret. Имя <code>TG_TOKEN</code>, значение — токен бота.</li>
+          <li>Нажмите «Проверить алерты сейчас»: бот пришлёт «Бот подключён».</li></ol></div></details>
+      </div>
+      <div class="panel stack">
+        <h2>Установить как приложение</h2>
+        <div class="small"><b>Телефон (Android, Chrome):</b> меню ⋮ → «Добавить на главный экран».<br><b>iPhone (Safari):</b> «Поделиться» → «На экран Домой».<br><b>ПК (Chrome / Edge):</b> значок установки в адресной строке.</div>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- ===== ГРАФИК ===== -->
+<div class="modal" id="chartModal" role="dialog" aria-modal="true" aria-labelledby="chTitle">
+  <div class="sheet">
+    <div class="sheet-h">
+      <div><b id="chTitle" style="font-size:18px">—</b> <span class="note" id="chName"></span></div>
+      <div class="seg" role="group" aria-label="Таймфрейм графика"><button type="button" data-ctf="M">Месяц</button><button type="button" data-ctf="W">Неделя</button><button type="button" data-ctf="D" class="on">День</button></div>
+      <span style="flex:1"></span>
+      <button class="btn ghost" type="button" id="chClose">Закрыть</button>
+    </div>
+    <div class="sheet-b">
+      <div class="chart-box" id="chartBox"></div>
+      <div class="chart-side" id="chartSide"></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="scanner.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
