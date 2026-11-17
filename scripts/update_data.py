@@ -12,6 +12,7 @@
 """
 import argparse
 import json
+import re
 import math
 import os
 import sys
@@ -26,6 +27,8 @@ MIN_CAP = float(os.environ.get("MIN_CAP", 10e9))
 # Чувствительность зигзага: разворот считается, когда цена прошла K * ATR(14) от экстремума.
 ZZ_K = {"D": 2.5, "W": 2.0, "M": 1.5}
 KEEP_PIVOTS = 16
+# Облигации, привилегированные акции, варранты и т.п. — не обычные акции, сканер их не смотрит
+NOT_COMMON = re.compile(r"%|\b(notes?|debentures?|preferred|warrants?|rights|units?|subordinated|perpetual|depositary shares, each)\b", re.I)
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
@@ -53,7 +56,7 @@ def load_universe(prev_path):
             cap = float(str(x.get("marketCap") or "0").replace(",", "").replace("$", "") or 0)
         except ValueError:
             cap = 0
-        if cap < MIN_CAP:
+        if cap < MIN_CAP or NOT_COMMON.search(x.get("name") or ""):
             continue
         out.append({"s": sym.replace("/", "-"), "n": (x.get("name") or "").strip(),
                     "sec": (x.get("sector") or "").strip(), "ind": (x.get("industry") or "").strip(),
