@@ -1,7 +1,7 @@
 /* Сканер по правилам Осипова.
  * Вход: структура бумаги из universe.json (развороты по таймфреймам M, W, D).
- * Каждый разворот: [индекс бара, тип, цена по тени, цена по телу], тип 1 — максимум, -1 — минимум,
- * ±2 — текущий экстремум, ещё не подтверждённый разворотом.
+ * Каждый разворот: [индекс бара, тип, цена по тени, цена по телу, RSI], тип 1 — максимум, -1 — минимум,
+ * ±2 — текущий экстремум, ещё не подтверждённый разворотом. tf.r — RSI(14) последних 5 свечей.
  * Все детекторы написаны для покупки; для шорта цены зеркалятся (умножаются на -1).
  */
 (function (root) {
@@ -32,11 +32,31 @@
   function view(tf, sgn) {
     if (!tf || !tf.p || !tf.p.length) return null;
     var p = tf.p.map(function (x) {
-      return { i: x[0], t: sgn * Math.sign(x[1]), tent: Math.abs(x[1]) === 2, w: sgn * x[2], b: sgn * x[3] };
+      return { i: x[0], t: sgn * Math.sign(x[1]), tent: Math.abs(x[1]) === 2, w: sgn * x[2], b: sgn * x[3], r: mr(x[4], sgn) };
     });
     var lb = tf.lb, pb = tf.pb;
     var bar = function (b) { return sgn > 0 ? { o: b[0], h: b[1], l: b[2], c: b[3] } : { o: -b[0], h: -b[2], l: -b[1], c: -b[3] }; };
-    return { p: p, a: tf.a, n: tf.n, P: sgn * lb[3], last: bar(lb), prev: bar(pb), cp: tf.cp || [], sgn: sgn };
+    return { p: p, a: tf.a, n: tf.n, P: sgn * lb[3], last: bar(lb), prev: bar(pb), cp: tf.cp || [], sgn: sgn,
+      r: (tf.r || []).map(function (x) { return mr(x, sgn); }) };
+  }
+  // RSI в «пространстве покупки»: для шорта перекупленность (70) становится перепроданностью (30)
+  function mr(x, sgn) { return x == null ? NaN : sgn > 0 ? x : 100 - x; }
+
+  // ---------- RSI (урок «RSI»): 30 / 70, середина — «зона неинтересно»
+  // exit — выход из перепроданности: пересечение 30 снизу вверх за последние 3 свечи (для шорта — 70 сверху вниз);
+  // conv — конвергенция у минимумов: цена обновила минимум, RSI — нет, первый минимум был в перепроданности
+  // (для шорта — дивергенция у максимумов); div — дивергенция против позиции: повод зафиксировать вручную.
+  function rsiInfo(v) {
+    var r = v.r || [], now = r[r.length - 1], o = { now: now, exit: false, os: false, ob: false, conv: false, div: false };
+    if (!isFinite(now)) return o;
+    o.os = now < 30; o.ob = now > 70;
+    for (var k = Math.max(1, r.length - 3); k < r.length; k++) if (r[k - 1] < 30 && r[k] >= 30) o.exit = true;
+    if (now < 30) o.exit = false;
+    var lows = v.p.filter(function (x) { return x.t < 0 && isFinite(x.r); }).slice(-2);
+    if (lows.length === 2 && lows[1].w < lows[0].w && lows[1].r > lows[0].r + 2 && lows[0].r < 35) o.conv = true;
+    var highs = v.p.filter(function (x) { return x.t > 0 && isFinite(x.r); }).slice(-2);
+    if (highs.length === 2 && highs[1].w > highs[0].w && highs[1].r < highs[0].r - 2 && highs[0].r > 65) o.div = true;
+    return o;
   }
   var real = function (v, x) { return v.sgn * x; };
 
@@ -261,6 +281,19 @@
 
   var DETECTORS = { breakK: detBreak, breakN: detBreak, prevHigh: detPrevHigh, line: detLine, flatLow: detFlatLow, flatRetest: detFlatRetest, third: detThird, dbl: detDouble };
 
+  // Подсказки RSI для находки: rsi.ok — доп. подтверждения входа, rsi.warn — предупреждения
+  function rsiTags(t, tf, sgn) {
+    var ok = [], warn = [], e = rsiInfo(view(t[tf], sgn)), w = rsiInfo(view(t.W, sgn)), m = rsiInfo(view(t.M, sgn));
+    var long = sgn > 0;
+    if (e.exit) ok.push(long ? "RSI вышел из перепроданности" : "RSI вышел из перекупленности");
+    if (e.conv) ok.push(long ? "RSI конвергенция" : "RSI дивергенция у максимумов");
+    if (e.os) warn.push(long ? "RSI в перепроданности: ждём выхода через 30" : "RSI в перекупленности: ждём выхода через 70");
+    var hiW = long ? "перекупленности" : "перепроданности";
+    if (w.ob && m.ob && rsiInfo(view(t.D, sgn)).ob) warn.push("все ТФ в " + hiW + ": продолжение 50/50");
+    else if (w.ob || m.ob) warn.push((m.ob ? "MN" : "W") + " в " + hiW + ": ближе к фиксации, чем ко входу");
+    return { ok: ok, warn: warn, now: isFinite(e.now) ? (long ? e.now : 100 - e.now) : null };
+  }
+
   function daysTo(d, today) {
     if (!d) return NaN;
     return Math.round((new Date(d + "T00:00:00Z") - new Date(today + "T00:00:00Z")) / 864e5);
@@ -295,7 +328,7 @@
             s: t.s, n: t.n, sec: t.sec, mc: t.mc, px: t.px, dir: dir, tf: cfg.tf, k: h.k,
             name: (dir === "long" ? SETUPS : SETUPS_SHORT)[h.k], why: h.why, zone: h.zs.z, dAtr: h.zs.d,
             entry: h.pl.entry, stop: h.pl.stop, take: h.pl.take, level: h.lvl, takeLevel: h.pl.level, rr: h.pl.rr,
-            trg: h.trg, mT: mT, wT: wT, e: t.e || null, eDays: ed, atr: t[cfg.tf].a
+            trg: h.trg, mT: mT, wT: wT, e: t.e || null, eDays: ed, atr: t[cfg.tf].a, rsi: rsiTags(t, cfg.tf, sgn)
           });
         });
       });
@@ -312,11 +345,11 @@
     });
     var zr = { in: 0, near: 1, far: 2 };
     out.sort(function (a, b) {
-      return (zr[a.zone] - zr[b.zone]) || ((b.trg.length > 0) - (a.trg.length > 0)) || ((b.rr || 0) - (a.rr || 0));
+      return (zr[a.zone] - zr[b.zone]) || ((b.trg.length > 0) - (a.trg.length > 0)) || ((b.rsi.ok.length > 0) - (a.rsi.ok.length > 0)) || ((b.rr || 0) - (a.rr || 0));
     });
     return out;
   }
 
-  var api = { scan: scan, scanTicker: scanTicker, trend: trend, view: view, phase: phase, SETUPS: SETUPS, SETUPS_SHORT: SETUPS_SHORT };
+  var api = { scan: scan, scanTicker: scanTicker, trend: trend, view: view, phase: phase, rsiInfo: rsiInfo, rsiTags: rsiTags, SETUPS: SETUPS, SETUPS_SHORT: SETUPS_SHORT };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.OsipovScanner = api;
 })(this);

@@ -3,7 +3,7 @@
 Запускается в GitHub Actions после закрытия рынка США.
 1. Список бумаг: все акции NASDAQ/NYSE/AMEX с капитализацией от MIN_CAP (по умолчанию 10 млрд $).
 2. Котировки (yfinance): месяц (до 25 лет), неделя (10 лет), день (2 года).
-3. Для каждого таймфрейма: развороты (зигзаг по ATR), ATR, последние две свечи и свечные модели.
+3. Для каждого таймфрейма: развороты (зигзаг по ATR), ATR, RSI(14), последние две свечи и свечные модели.
 4. Даты ближайших отчётов.
 Результат:
   <out>/universe.json  — компактные структуры для сканера (весь рынок одним файлом)
@@ -128,6 +128,28 @@ def atr(h, l, c, n=14):
     return out
 
 
+def rsi(c, n=14):
+    """RSI(14) по Уайлдеру."""
+    c = np.asarray(c, dtype=float)
+    out = np.full(len(c), np.nan)
+    if len(c) <= n:
+        return out
+    d = np.diff(c)
+    up = np.where(d > 0, d, 0.0)
+    dn = np.where(d < 0, -d, 0.0)
+    au, ad = up[:n].mean(), dn[:n].mean()
+    out[n] = 100.0 if ad == 0 else 100 - 100 / (1 + au / ad)
+    for i in range(n + 1, len(c)):
+        au = (au * (n - 1) + up[i - 1]) / n
+        ad = (ad * (n - 1) + dn[i - 1]) / n
+        out[i] = 100.0 if ad == 0 else 100 - 100 / (1 + au / ad)
+    return out
+
+
+def r1(x):
+    return round(float(x), 1) if math.isfinite(x) else None
+
+
 def zigzag(o, h, l, c, k):
     """Развороты: [индекс бара, тип (1 максимум / -1 минимум; ±2 — текущий, ещё не подтверждённый),
     цена по тени, цена по телу]."""
@@ -204,7 +226,10 @@ def tf_struct(df, key, limit):
     if len(c) < 20:
         return None, None
     p, a = zigzag(o, h, l, c, ZZ_K[key])
-    st = {"a": rnd(a), "n": len(c), "p": p,
+    R = rsi(c)
+    for pv in p:  # RSI в точке разворота — для дивергенции и конвергенции
+        pv.append(r1(R[pv[0]]))
+    st = {"a": rnd(a), "n": len(c), "p": p, "r": [r1(x) for x in R[-5:]],
           "lb": [rnd(o[-1]), rnd(h[-1]), rnd(l[-1]), rnd(c[-1])],
           "pb": [rnd(o[-2]), rnd(h[-2]), rnd(l[-2]), rnd(c[-2])],
           "cp": candles(o, h, l, c), "d": t[-1]}

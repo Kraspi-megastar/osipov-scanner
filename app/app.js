@@ -27,7 +27,8 @@ var CHECKS = [
   { g: "D — точка входа", items: [
     { id: "c6", t: "Есть паттерн: слом → ретест, 1-2-3, ГиП, двойное дно, пробой с 3-го раза" },
     { id: "c7", t: "Триггер есть и свеча закрылась", crit: 1 },
-    { id: "c8", t: "Для отскока пинбаром или двумя свечами есть слом на младшем ТФ" }] },
+    { id: "c8", t: "Для отскока пинбаром или двумя свечами есть слом на младшем ТФ" },
+    { id: "c15", t: "Доп. подтверждение RSI по тренду: выход из перепроданности через 30 (шорт — из перекупленности через 70) или конвергенция; можно смотреть на H4" }] },
   { g: "Фильтры и риск", items: [
     { id: "c9", t: "Не середина флета", crit: 1 },
     { id: "c10", t: "Нет отчёта в ближайшие ~2 недели", crit: 1 },
@@ -58,6 +59,12 @@ function css(v) { return getComputedStyle(document.documentElement).getPropertyV
 var toastTimer;
 function toast(msg) { var t = $("#toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove("on"); }, 3200); }
 function kv(k, v, cls) { return '<div class="kv ' + (cls || "") + '"><div class="k">' + esc(k) + '</div><div class="v">' + v + "</div></div>"; }
+function rsiHtml(r) {
+  if (!r) return "";
+  return r.ok.map(function (x) { return '<span class="tag up">' + esc(x) + "</span>"; }).concat(r.warn.map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; })).join(" ");
+}
+function rsiVal(t, tf) { var r = t && t[tf] && t[tf].r; var x = r && r[r.length - 1]; return x == null ? NaN : x; }
+function rsiZone(x) { return !isFinite(x) ? "" : x > 70 ? " (перекупл.)" : x < 30 ? " (перепрод.)" : ""; }
 function trendTag(t, label) { var c = t === "up" ? "up" : t === "down" ? "down" : ""; return '<span class="tag ' + c + '">' + esc(label) + " " + esc(TREND[t] || "—") + "</span>"; }
 
 /* ======================= хранилище и синхронизация ======================= */
@@ -172,14 +179,14 @@ function loadData() {
 
 /* ======================= сканер ======================= */
 var SCFG = Object.assign({ tf: "D", dir: "long", setups: { breakK: 1, breakN: 1, prevHigh: 1, line: 1, flatLow: 1, flatRetest: 1, third: 1, dbl: 1 },
-  zIn: true, zNear: true, mn: true, w: true, earn: true, trg: false, rr: "2", cap: 10, sector: "" }, lsGet(LS_SCAN, {}));
+  zIn: true, zNear: true, mn: true, w: true, earn: true, trg: false, rsi: false, rr: "2", cap: 10, sector: "" }, lsGet(LS_SCAN, {}));
 var LAST = [];
 function initScan() {
   var box = $("#oSetups"), html = "";
   Object.keys(SC.SETUPS).forEach(function (k) { html += '<label><input type="checkbox" data-setup="' + k + '"' + (SCFG.setups[k] ? " checked" : "") + "> " + esc(SC.SETUPS[k]) + "</label>"; });
   box.innerHTML = html;
   $("#oZoneIn").checked = SCFG.zIn; $("#oZoneNear").checked = SCFG.zNear; $("#oMn").checked = SCFG.mn; $("#oW").checked = SCFG.w;
-  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRR").value = SCFG.rr; $("#oCap").value = SCFG.cap;
+  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRsi").checked = !!SCFG.rsi; $("#oRR").value = SCFG.rr; $("#oCap").value = SCFG.cap;
   segSync();
   $$("[data-o-tf]").forEach(function (b) { b.onclick = function () { SCFG.tf = b.dataset.oTf; segSync(); saveScanCfg(); }; });
   $$("[data-o-dir]").forEach(function (b) { b.onclick = function () { SCFG.dir = b.dataset.oDir; segSync(); saveScanCfg(); }; });
@@ -199,7 +206,7 @@ function segSync() {
 function readScanCfg() {
   $$("[data-setup]").forEach(function (i) { SCFG.setups[i.dataset.setup] = i.checked ? 1 : 0; });
   SCFG.zIn = $("#oZoneIn").checked; SCFG.zNear = $("#oZoneNear").checked; SCFG.mn = $("#oMn").checked; SCFG.w = $("#oW").checked;
-  SCFG.earn = $("#oEarn").checked; SCFG.trg = $("#oTrg").checked; SCFG.rr = $("#oRR").value; SCFG.cap = num($("#oCap").value) || 0; SCFG.sector = $("#oSector").value;
+  SCFG.earn = $("#oEarn").checked; SCFG.trg = $("#oTrg").checked; SCFG.rsi = $("#oRsi").checked; SCFG.rr = $("#oRR").value; SCFG.cap = num($("#oCap").value) || 0; SCFG.sector = $("#oSector").value;
 }
 function saveScanCfg() { lsSet(LS_SCAN, SCFG); }
 function engineCfg(all) {
@@ -217,6 +224,7 @@ function runScan() {
     var t0 = performance.now();
     var res = SC.scan(DATA.uni, engineCfg(false));
     if (SCFG.trg) res = res.filter(function (h) { return h.trg && h.trg.length; });
+    if (SCFG.rsi) res = res.filter(function (h) { return h.rsi && h.rsi.ok.length; });
     // группируем по бумаге и стороне: лучшая находка + остальные сетапы
     var groups = {}, order = [];
     res.forEach(function (h) { var key = h.s + "|" + h.dir; if (!groups[key]) { groups[key] = h; h.more = []; order.push(key); } else if (groups[key].more.indexOf(h.name) < 0 && groups[key].name !== h.name) groups[key].more.push(h.name); });
@@ -233,12 +241,13 @@ function renderHits() {
   el.innerHTML = LAST.slice(0, 300).map(function (h, i) {
     var zone = h.zone === "in" ? '<span class="tag up">в зоне</span>' : '<span class="tag acc">до зоны ' + fmt(Math.abs(h.dAtr), 1) + " ATR</span>";
     var trg = (h.trg || []).map(function (x) { return '<span class="tag warn">' + esc(x) + "</span>"; }).join(" ");
+    var rs = rsiHtml(h.rsi);
     var earn = isFinite(h.eDays) && h.eDays >= 0 ? '<span class="tag' + (h.eDays <= 14 ? " down" : "") + '">отчёт ' + (h.eDays <= 30 ? "через " + h.eDays + " дн." : esc(h.e)) + "</span>" : "";
     return '<button type="button" class="hit ' + h.dir + '" data-hit="' + i + '" data-s="' + esc(h.s) + '">' +
       '<div class="row between"><span class="tk">' + esc(h.s) + '</span><span class="tag ' + (h.dir === "long" ? "up" : "down") + '">' + (h.dir === "long" ? "покупка" : "шорт") + " · " + esc(h.tf) + "</span></div>" +
       '<div class="nm">' + esc(h.n || "") + (h.sec ? " · " + esc(h.sec) : "") + "</div>" +
       '<div class="small"><b>' + esc(h.name) + "</b>" + (h.more.length ? ' <span class="muted">+ ' + esc(h.more.join(", ")) + "</span>" : "") + "</div>" +
-      '<div class="row">' + zone + " " + trg + " " + earn + "</div>" +
+      '<div class="row">' + zone + " " + trg + " " + earn + "</div>" + (rs ? '<div class="row">' + rs + "</div>" : "") +
       '<div class="nums"><div><span>Вход</span>' + px(h.entry) + "</div><div><span>Стоп</span>" + px(h.stop) + "</div><div><span>Тейк</span>" + px(h.take) + "</div><div><span>R:R</span>" + (isFinite(h.rr) ? "1:" + fmt(h.rr, 1) : "—") + "</div></div>" +
       '<div class="row">' + trendTag(h.mT, "MN") + " " + trendTag(h.wT, "W") + "</div></button>";
   }).join("") + (LAST.length > 300 ? '<div class="note">Показаны первые 300. Сузьте фильтры.</div>' : "");
@@ -270,6 +279,13 @@ function drawChart() {
   var ser = chart.addCandlestickSeries({ upColor: up, downColor: dn, wickUpColor: up, wickDownColor: dn, borderVisible: false });
   var rows = CH.data[CH.tf] || [];
   ser.setData(rows.map(function (r) { return { time: r[0], open: r[1], high: r[2], low: r[3], close: r[4] }; }));
+  // RSI(14) отдельной панелью снизу: 30 / 70, середина — «зона неинтересно»
+  ser.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.27 } });
+  var rv = rsiSeries(rows.map(function (r) { return r[4]; }));
+  var rsiS = chart.addLineSeries({ priceScaleId: "rsi", color: css("--warn"), lineWidth: 1, lastValueVisible: true, priceLineVisible: false, title: "RSI" });
+  chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.78, bottom: 0.02 }, borderColor: css("--line") });
+  rsiS.setData(rows.map(function (r, i) { return isFinite(rv[i]) ? { time: r[0], value: +rv[i].toFixed(1) } : null; }).filter(Boolean));
+  [30, 70].forEach(function (lv) { rsiS.createPriceLine({ price: lv, color: css("--muted"), lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: String(lv) }); });
   // развороты (зигзаг) с этого таймфрейма
   var st = (DATA.map[CH.s] || {})[CH.tf];
   if (st && st.p) {
@@ -287,6 +303,15 @@ function drawChart() {
   chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - show), to: n + 3 });
   CH.chart = chart;
 }
+function rsiSeries(c, n) {
+  n = n || 14; var out = c.map(function () { return NaN; });
+  if (c.length <= n) return out;
+  var au = 0, ad = 0, i;
+  for (i = 1; i <= n; i++) { var d = c[i] - c[i - 1]; if (d > 0) au += d; else ad -= d; }
+  au /= n; ad /= n; out[n] = ad === 0 ? 100 : 100 - 100 / (1 + au / ad);
+  for (i = n + 1; i < c.length; i++) { var e = c[i] - c[i - 1]; au = (au * (n - 1) + Math.max(e, 0)) / n; ad = (ad * (n - 1) + Math.max(-e, 0)) / n; out[i] = ad === 0 ? 100 : 100 - 100 / (1 + au / ad); }
+  return out;
+}
 function renderSide() {
   var s = CH.s, t = DATA.map[s] || {}, h = CH.hit;
   var found = h ? [h] : (DATA.map[s] ? ["D", "W"].reduce(function (acc, tf) {
@@ -296,6 +321,7 @@ function renderSide() {
   var mT = SC.trend(SC.view(t.M, 1)), wT = SC.trend(SC.view(t.W, 1)), dT = SC.trend(SC.view(t.D, 1));
   var ed = daysTo(t.e);
   var html = '<div class="row">' + trendTag(mT, "MN") + trendTag(wT, "W") + trendTag(dT, "D") + "</div>";
+  html += '<div class="small">RSI(14): ' + ["M", "W", "D"].map(function (k) { var x = rsiVal(t, k); return (k === "M" ? "MN" : k) + " <b class=\"mono\">" + (isFinite(x) ? fmt(x, 0) : "—") + "</b>" + rsiZone(x); }).join(" · ") + "</div>";
   html += '<div class="small">Цена: <b class="mono">' + px(t.px) + "</b>" + (t.e ? ' · отчёт: <b>' + esc(t.e) + "</b>" + (isFinite(ed) && ed >= 0 && ed <= 14 ? ' <span class="tag down">через ' + ed + " дн.</span>" : "") : "") + "</div>";
   if (found.length) {
     var f = found[0];
@@ -304,6 +330,7 @@ function renderSide() {
       html += '<div class="kv"><div class="small"><span class="tag ' + (x.dir === "long" ? "up" : "down") + '">' + (x.dir === "long" ? "покупка" : "шорт") + " · " + x.tf + "</span> <b>" + esc(x.name) + '</b></div><div class="note">' + esc(x.why) + "</div>" +
         '<div class="small mono">вход ' + px(x.entry) + " · стоп " + px(x.stop) + " · тейк " + px(x.take) + " · R:R " + (isFinite(x.rr) ? "1:" + fmt(x.rr, 1) : "—") + "</div>" +
         ((x.trg || []).length ? '<div class="small">Триггер: ' + x.trg.map(esc).join(", ") + "</div>" : '<div class="note">Триггера пока нет — ждём свечу в зоне.</div>') +
+        (rsiHtml(x.rsi) ? '<div class="row">' + rsiHtml(x.rsi) + "</div>" : "") +
         (!h ? '<button type="button" class="btn ghost small" data-usehit="' + i + '">Показать уровни на графике</button>' : "") + "</div>";
     });
     html += "</div>";
@@ -342,7 +369,7 @@ function renderSide() {
 
 /* ======================= сделка: чек-лист + калькулятор ======================= */
 var UI = lsGet(LS_UI, {});
-var dir = UI.dir || "long", checks = UI.checks || {}, lastCalc = null;
+var dir = UI.dir || "long", checks = UI.checks || {}, lastCalc = null, addTo = null;
 function initTrade() {
   $("#t_setup").innerHTML = opts(SETUPS, UI.setup || SETUPS[0]);
   $("#t_trigger").innerHTML = opts(TRIGGERS, UI.trigger || TRIGGERS[0]);
@@ -374,7 +401,7 @@ function prefillTrade(s, h) {
     setCalc(c); setDir(h.dir, true);
     $("#calcNote").textContent = "Цифры из сканера: вход у уровня, стоп за уровнем на 0,5 ATR, тейк — следующий уровень. Поправьте по факту на графике.";
     if (h.trg && h.trg.length) { var tm = { "пинбар": TRIGGERS[4], "поглощение": TRIGGERS[3], "харами": TRIGGERS[2], "ложный пробой одной свечой": TRIGGERS[0], "ложный пробой двумя свечами": TRIGGERS[1] }; if (tm[h.trg[0]]) $("#t_trigger").value = tm[h.trg[0]]; }
-    checks = {}; if (h.mT !== (h.dir === "long" ? "down" : "up")) checks.c1 = true; if (!(isFinite(h.eDays) && h.eDays >= 0 && h.eDays <= 14)) checks.c10 = true;
+    checks = {}; if (h.mT !== (h.dir === "long" ? "down" : "up")) checks.c1 = true; if (!(isFinite(h.eDays) && h.eDays >= 0 && h.eDays <= 14)) checks.c10 = true; if (h.rsi && h.rsi.ok.length) checks.c15 = true;
     $$("#checklist input").forEach(function (i) { i.checked = !!checks[i.id]; });
   }
   onTradeChange();
@@ -407,9 +434,12 @@ function calc() {
   if (!r.ok) { o.innerHTML = '<div class="kv" style="grid-column:1/-1"><div class="k">Расчёт</div><div class="small neg">' + esc(r.err) + "</div></div>"; verdict(); return; }
   var h = kv("Акций по риску", fmt(r.shares, 0), "big") + kv("Риск, $", money(r.realRisk)) + kv("Объём", money(r.vol)) + kv("Доля депозита", fmt(r.volPct, 0) + "%") + kv("До стопа", fmt(r.stopPct, 2) + "%");
   if (isFinite(r.rr)) h += kv("Тейк в ордер", px(r.tEff)) + kv("Прибыль на тейке", money(r.profit)) + kv("К депозиту", fmt(r.profitPctDep, 2) + "%") + kv("R:R (чистыми)", "1 : " + fmt(r.rr, 1), "big");
-  h += kv("Добор (в 2 раза меньше)", fmt(r.add, 0) + " акц.");
+  h += kv("Добор при пробое с 3-го раза (½)", fmt(r.add, 0) + " акц.");
+  var par = addTo && Store.get("trades", addTo);
+  if (par) h += '<div class="kv" style="grid-column:1/-1"><div class="k">Докупка к сделке ' + esc(par.ticker) + " от " + esc(par.date) + '</div><div class="small">Это отдельная сделка: своя ТВХ, свой стоп за своим паттерном, риск от текущего депозита. После записи в журнал стопы открытых частей перенесутся на стоп докупки. <button class="btn ghost small" type="button" id="cancelAdd">Не докупка</button></div></div>';
   if (r.volPct > 100) h += '<div class="kv" style="grid-column:1/-1"><div class="k">Маржа</div><div class="small">Объём больше депозита в ' + fmt(r.volPct / 100, 1) + " раза: нужно плечо. Допустимо, если риск остаётся 1%.</div></div>";
   o.innerHTML = h; verdict();
+  var ca = $("#cancelAdd"); if (ca) ca.onclick = function () { addTo = null; calc(); };
 }
 function verdict() {
   var missing = [];
@@ -441,6 +471,9 @@ function tradeToJournal() {
   editing = { isNew: true, obj: { id: uid("t"), date: today(), ticker: ($("#t_ticker").value || "").toUpperCase(), tf: $("#t_tf").value, dir: dir, setup: $("#t_setup").value, trigger: $("#t_trigger").value,
     reason: reasonText(), before: "", deposit: c.dep, entry: c.entry, stop: c.stop, take: r.ok && isFinite(r.tEff) ? +r.tEff.toFixed(4) : c.take, shares: r.ok ? r.shares : "", riskPct: c.risk, riskUsd: r.ok ? +r.realRisk.toFixed(2) : "",
     status: "open", exit: "", pnl: "", closeWhy: "", chbd: "", after: "", created: Date.now() } };
+  var par = addTo && Store.get("trades", addTo);
+  if (par && par.ticker === editing.obj.ticker && (par.dir || "long") === dir) editing.obj.parent = par.id;
+  addTo = null;
   location.hash = "#journal"; renderJournal();
   setTimeout(function () { var el = $("#editWrap"); if (el) el.scrollIntoView({ block: "start" }); }, 50);
 }
@@ -476,7 +509,7 @@ function renderJournal() {
   var th = '<thead><tr><th>Дата</th><th>Тикер</th><th>ТФ</th><th>Сторона</th><th>Сетап</th><th>Статус</th><th class="n">Риск $</th><th class="n">Итог $</th><th class="n">R</th><th></th></tr></thead>';
   var tb = rows.map(function (t) {
     var R = tradeR(t), p = num(t.pnl), st = t.status || "open", stc = st === "take" ? "up" : st === "stop" ? "down" : st === "open" ? "acc" : "";
-    return '<tr class="' + (t.ex ? "ex" : "") + '"><td class="mono">' + esc(t.date) + "</td><td><b>" + esc(t.ticker || "—") + "</b></td><td>" + esc(t.tf || "") + '</td><td><span class="tag ' + (t.dir === "short" ? "down" : "up") + '">' + (t.dir === "short" ? "шорт" : "покупка") + '</span></td><td class="small">' + esc(t.setup || "") + '</td><td><span class="tag ' + stc + '">' + esc(STATUS[st] || st) + '</span></td><td class="n">' + (isFinite(num(t.riskUsd)) ? money(num(t.riskUsd)) : "—") + '</td><td class="n ' + (p > 0 ? "pos" : p < 0 ? "neg" : "") + '">' + (isFinite(p) ? money(p) : "—") + '</td><td class="n">' + (isFinite(R) ? fmt(R, 2) : "—") + "</td><td>" + (t.ex ? "" : '<button class="btn ghost small" type="button" data-edit="' + esc(t.id) + '">Открыть</button>') + "</td></tr>";
+    return '<tr class="' + (t.ex ? "ex" : "") + '"><td class="mono">' + esc(t.date) + "</td><td><b>" + esc(t.ticker || "—") + "</b></td><td>" + esc(t.tf || "") + '</td><td><span class="tag ' + (t.dir === "short" ? "down" : "up") + '">' + (t.dir === "short" ? "шорт" : "покупка") + '</span></td><td class="small">' + esc(t.setup || "") + (t.parent ? ' <span class="tag acc">докупка</span>' : "") + '</td><td><span class="tag ' + stc + '">' + esc(STATUS[st] || st) + "</span>" + (st === "open" && atBE(t) ? ' <span class="tag up">стоп в БУ</span>' : "") + ((t.partials || []).length ? ' <span class="tag">частично</span>' : "") + '</td><td class="n">' + (isFinite(num(t.riskUsd)) ? money(num(t.riskUsd)) : "—") + '</td><td class="n ' + (p > 0 ? "pos" : p < 0 ? "neg" : "") + '">' + (isFinite(p) ? money(p) : "—") + '</td><td class="n">' + (isFinite(R) ? fmt(R, 2) : "—") + "</td><td>" + (t.ex ? "" : '<button class="btn ghost small" type="button" data-edit="' + esc(t.id) + '">Открыть</button>') + "</td></tr>";
   }).join("");
   $("#jTable").innerHTML = th + "<tbody>" + (tb || '<tr><td colspan="10" class="empty">Нет записей в этом фильтре</td></tr>') + "</tbody>";
   var by = {}; cl.forEach(function (t) { var k = t.setup || "Без сетапа"; (by[k] = by[k] || []).push(t); });
@@ -510,13 +543,23 @@ function renderEdit() {
     fld("deposit", "Депозит, $", "number", t.deposit) + fld("riskPct", "Риск, %", "number", t.riskPct) + fld("entry", "Вход", "number", t.entry) + fld("stop", "Стоп", "number", t.stop) + fld("take", "Тейк", "number", t.take) + fld("shares", "Акций", "number", t.shares) + fld("riskUsd", "Риск, $", "number", t.riskUsd) +
     '</div><div class="fields wide">' + sel("setup", "Сетап", SETUPS, t.setup) + sel("trigger", "Триггер", TRIGGERS, t.trigger) + "</div>" +
     '<div class="fields wide">' + area("reason", "Почему вхожу (MN → W → D, триггер)", t.reason) + area("before", "Состояние до работы", t.before) + "</div>" +
+    (editing.isNew && t.parent ? moveStopsBox(t) : "") +
+    (!editing.isNew && (t.status || "open") === "open" ? '<div id="mgmt" class="stack"></div>' : mgmtLog(t)) +
     '<h3>Выход</h3><div class="fields"><label class="f"><span>Как закрылась</span><select name="status" id="f_status">' + Object.keys(STATUS).map(function (k) { return '<option value="' + k + '"' + (t.status === k ? " selected" : "") + ">" + STATUS[k] + "</option>"; }).join("") + "</select></label>" +
     fld("exit", "Цена выхода", "number", t.exit) + fld("pnl", "Итог, $", "number", t.pnl) + '</div><div class="note" id="pnlHint"></div>' +
     '<div class="fields wide">' + area("closeWhy", "Почему закрылась", t.closeWhy) + area("chbd", "ЧБД — что было дальше", t.chbd) + area("after", "Состояние после", t.after) + "</div>" +
     '<div class="row"><button class="btn pri" type="submit">Сохранить</button>' + (editing.isNew ? "" : '<button class="btn danger" type="button" id="delTrade">Удалить</button><span class="note" id="delAsk"></span>') + "</div></form>";
   var f = $("#tradeForm");
   f.addEventListener("input", function (e) { if (["exit", "entry", "shares", "dir"].indexOf(e.target.name) >= 0) autoPnl(); });
-  f.addEventListener("submit", function (e) { e.preventDefault(); Store.put("trades", readForm(f, editing.obj)); editing = null; renderJournal(); toast("Сделка сохранена"); });
+  f.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var o = readForm(f, editing.obj), moved = 0, mv = o.moveStops; delete o.moveStops;
+    var orig = Store.get("trades", o.id);
+    if (orig && !isFinite(num(o.stop0)) && num(orig.stop) !== num(o.stop)) { o.stop0 = orig.stop; addLog(o, "Стоп изменён вручную: " + px(num(orig.stop)) + " → " + px(num(o.stop))); }
+    if (mv && o.parent && isFinite(num(o.stop))) moved = moveSiblingStops(o);
+    Store.put("trades", o); editing = null; renderJournal(); toast(moved ? "Сделка сохранена, стопы перенесены: " + moved : "Сделка сохранена");
+  });
+  if ($("#mgmt")) renderMgmt();
   $("#cancelEdit").onclick = function () { editing = null; renderEdit(); };
   var del = $("#delTrade");
   if (del) { var armed = false; del.onclick = function () { if (!armed) { armed = true; del.textContent = "Точно удалить?"; $("#delAsk").textContent = "Нажмите ещё раз — запись удалится."; return; } Store.del("trades", editing.obj.id); editing = null; renderJournal(); }; }
@@ -524,15 +567,127 @@ function renderEdit() {
 }
 function autoPnl(onlyHint) {
   var f = $("#tradeForm"); if (!f) return;
-  var e = num(f.entry.value), x = num(f.exit.value), sh = num(f.shares.value), d = f.dir.value === "short" ? -1 : 1, h = $("#pnlHint");
-  if (isFinite(e) && isFinite(x) && sh > 0) { var p = (x - e) * sh * d; h.textContent = "По цене выхода без комиссии: " + money(p) + (onlyHint ? "" : " — подставлено в «Итог»"); if (!onlyHint) f.pnl.value = p.toFixed(2); }
-  else h.textContent = "Укажите цену выхода — итог посчитается сам (без комиссии), его можно поправить.";
+  var fe = function (n) { return f.querySelector('[name="' + n + '"]'); };
+  var e = num(fe("entry").value), x = num(fe("exit").value), sh = num(fe("shares").value), d = fe("dir").value === "short" ? -1 : 1, h = $("#pnlHint");
+  var part = partialSum(editing && editing.obj), pt = part ? " (включая частичные выходы: " + money(part) + ")" : "";
+  if (isFinite(e) && isFinite(x) && sh >= 0) { var p = (x - e) * sh * d + part; h.textContent = "По цене выхода без комиссии: " + money(p) + pt + (onlyHint ? "" : " — подставлено в «Итог»"); if (!onlyHint) fe("pnl").value = p.toFixed(2); }
+  else h.textContent = "Укажите цену выхода — итог посчитается сам (без комиссии), его можно поправить." + (part ? " Частичные выходы уже дали " + money(part) + "." : "");
 }
+/* ======================= сопровождение сделки ======================= */
+var MGCUR = {};
+function sgn(t) { return t && t.dir === "short" ? -1 : 1; }
+function atBE(t) { var e = num(t.entry), s = num(t.stop); return isFinite(e) && isFinite(s) && sgn(t) * (s - e) >= 0; }
+function partialSum(t) { return ((t && t.partials) || []).reduce(function (a, p) { return a + (num(p.pnl) || 0); }, 0); }
+function addLog(t, text) { (t.log = t.log || []).push({ d: today(), t: text }); }
+function openSiblings(t) { return Store.list("trades").filter(function (x) { return x.id !== t.id && (x.status || "open") === "open" && x.ticker === t.ticker && (x.dir || "long") === (t.dir || "long"); }); }
+function moveStopsBox(t) {
+  var sib = openSiblings(t);
+  if (!sib.length) return "";
+  return '<label class="chk"><input type="checkbox" name="moveStops" checked><span>Перенести стопы открытых частей ' + esc(t.ticker) + " (" + sib.length + " шт.) на стоп этой докупки. По уроку «Сопровождение»: при каждой новой ТВХ все стопы переезжают за её паттерн.</span></label>";
+}
+function moveSiblingStops(o) {
+  var n = 0, ns = num(o.stop), s = sgn(o);
+  openSiblings(o).forEach(function (x) {
+    var cur = num(x.stop);
+    if (isFinite(cur) && s * (ns - cur) <= 0) return; // текущий стоп не хуже нового
+    if (!isFinite(num(x.stop0))) x.stop0 = x.stop;
+    x.stop = ns; addLog(x, "Стоп перенесён на " + px(ns) + " (докупка от " + o.date + ")"); x.u = Date.now(); n++;
+  });
+  return n;
+}
+function mgmtLog(t) {
+  var L = t.log || [];
+  if (!L.length) return "";
+  return '<div class="panel stack"><h3>Сопровождение — история</h3><ul class="small" style="margin:0;padding-left:18px">' + L.map(function (x) { return '<li><span class="mono">' + esc(x.d) + "</span> " + esc(x.t) + "</li>"; }).join("") + "</ul></div>";
+}
+function mgmtAct(fn) {
+  var f = $("#tradeForm"); if (!f) return;
+  var o = readForm(f, editing.obj);
+  if (fn(o) === false) return;
+  editing.obj = o;
+  Store.put("trades", JSON.parse(JSON.stringify(o)));
+}
+function renderMgmt() {
+  var box = $("#mgmt"), t = editing.obj, s = sgn(t);
+  var e = num(t.entry), st = num(t.stop), tk = num(t.take), sh = num(t.shares), s0 = isFinite(num(t.stop0)) ? num(t.stop0) : st;
+  var q = DATA.map[t.ticker], manual = isFinite(MGCUR[t.id]), cur = manual ? MGCUR[t.id] : (q ? q.px : NaN);
+  var path = isFinite(cur) && isFinite(tk) && tk !== e ? (cur - e) / (tk - e) : NaN;
+  var R = isFinite(cur) && isFinite(s0) && e !== s0 ? s * (cur - e) / Math.abs(e - s0) : NaN;
+  var openPnl = isFinite(cur) && sh > 0 ? s * (cur - e) * sh : NaN, part = partialSum(t);
+  var third = e + (tk - e) / 3, two = e + 2 * (tk - e) / 3, rep = q && q.e ? daysTo(q.e) : NaN;
+  var h = '<h3>Сопровождение</h3><div class="tiles">' +
+    kv("Текущая цена", px(cur) + ' <span class="tag">' + (manual ? "вручную" : "закрытие дня") + "</span>") +
+    kv("Пройдено пути к тейку", isFinite(path) ? fmt(path * 100, 0) + "%" : "—", "big") +
+    kv("Сейчас, R", isFinite(R) ? '<span class="' + (R >= 0 ? "pos" : "neg") + '">' + fmt(R, 2) + "</span>" : "—") +
+    kv("Открытый итог", isFinite(openPnl) ? '<span class="' + (openPnl >= 0 ? "pos" : "neg") + '">' + money(openPnl) + "</span>" : "—") +
+    (part ? kv("Зафиксировано", money(part)) : "") +
+    kv("Стоп", px(st) + (atBE(t) ? ' <span class="tag up">БУ</span>' : "")) +
+    kv("1/3 пути (сейф)", px(third)) + kv("2/3 пути", px(two)) + "</div>";
+  var cls = "wait", adv;
+  if (!isFinite(cur)) adv = "<b>Введите текущую цену</b> — бумаги нет в данных сканера.";
+  else if (path < 0) adv = "<b>Позиция в минусе: стоп не двигаем и не убираем.</b><div class='small'>Работаем на статистику. Закрыть раньше стопа — только если структура сломалась против нас: две свечи в обратную сторону и слом, а не «кажется».</div>";
+  else if (path < 1 / 3) adv = "<b>Ждём.</b><div class='small'>Стоп переносим только когда появилась новая ТВХ (пробой, ретест, выход из накопления, ложный пробой) и её подтверждает младший ТФ (H4).</div>";
+  else if (path < 0.8) { cls = "ok"; adv = "<b>Пройдена треть пути.</b><div class='small'>Есть новая ТВХ — можно докупиться отдельной сделкой со своим риском, все стопы перенести за её паттерн. Правило сейфа (по желанию, лучше на W и MN): закрыть 50% и стоп в безубыток.</div>"; }
+  else { cls = "ok"; adv = "<b>Цена у тейка.</b><div class='small'>Варианты: закрыть всё; или на личном счёте, если тренд в силе, закрыть 50% (иногда 80%), стоп в безубыток, тейк убрать и держать по тренду.</div>"; }
+  if (atBE(t) && isFinite(cur)) adv += "<div class='small'>Стоп уже в безубытке — эта часть позиции без риска.</div>";
+  if (q && path > 0) {
+    // RSI в «пространстве позиции»: ob — перекупленность для покупки (для шорта — перепроданность)
+    var hiZ = s > 0 ? "перекупленности" : "перепроданности";
+    var rw = SC.rsiInfo(SC.view(q.W, s)), rm = SC.rsiInfo(SC.view(q.M, s)), rd = SC.rsiInfo(SC.view(q.D, s));
+    if (rw.ob || rm.ob) adv += "<div class='small'><b>RSI: " + (rm.ob ? "MN" : "W") + " в " + hiZ + "</b> — пора думать о фиксации у ближайшего старшего уровня.</div>";
+    else if (rd.ob) adv += "<div class='small'>RSI на дневке в " + hiZ + ": идут активные " + (s > 0 ? "покупки" : "продажи") + " — движение в нашу сторону.</div>";
+    if (rd.div || rw.div) adv += "<div class='small'><b>RSI: " + (s > 0 ? "дивергенция" : "конвергенция") + " против позиции</b> (" + (rw.div ? "W" : "D") + ") — " + (s > 0 ? "покупатели" : "продавцы") + " заканчиваются. По уроку — фиксировать вручную.</div>";
+  }
+  if (isFinite(rep) && rep >= 0 && rep <= 14) { adv += "<div class='small'><b>Через " + rep + " дн. отчёт:</b> прибыльную позицию частично фиксируем.</div>"; if (path > 0) cls = "wait"; }
+  var mg = t.mg || {}, ml = { third: "пройдена треть", take: "цена у тейка", stop: "цена у стопа" };
+  var tg = Object.keys(ml).filter(function (k) { return mg[k]; }).map(function (k) { return ml[k] + " (" + new Date(mg[k]).toLocaleDateString("ru-RU") + ")"; });
+  if (tg.length) adv += "<div class='small muted'>Telegram уже сообщал: " + esc(tg.join(", ")) + ".</div>";
+  h += '<div class="verdict ' + cls + '">' + adv + "</div>";
+  h += '<div class="fields">' +
+    '<label class="f"><span>Текущая цена (если другая)</span><input type="number" step="any" id="mg_cur" value="' + (manual ? MGCUR[t.id] : "") + '" placeholder="' + (isFinite(cur) ? cur : "") + '"></label>' +
+    '<label class="f"><span>Новый стоп</span><input type="number" step="any" id="mg_stop"></label>' +
+    '<label class="f"><span>Основание</span><select id="mg_why"><option>новая ТВХ: ретест</option><option>новая ТВХ: пробой</option><option>новая ТВХ: выход из накопления</option><option>новая ТВХ: ложный пробой</option><option>подтверждение на H4</option><option>правило сейфа</option></select></label>' +
+    '<label class="f"><span>Зафиксировать часть</span><select id="mg_pct"><option value="50">50%</option><option value="80">80%</option><option value="33">33%</option></select></label>' +
+    '<label class="f"><span>Цена фиксации</span><input type="number" step="any" id="mg_px" placeholder="' + (isFinite(cur) ? cur : "") + '"></label></div>';
+  h += '<div class="row"><button class="btn" type="button" id="mg_be">Стоп в безубыток</button><button class="btn" type="button" id="mg_move">Перенести стоп</button><button class="btn" type="button" id="mg_part">Зафиксировать часть</button><button class="btn" type="button" id="mg_add">Докупка (новая ТВХ)</button></div>';
+  h += '<details class="sec"><summary>Когда закрывать вручную</summary><div class="body small"><ul><li>Нарисовался максимум: <b>две свечи в обратную сторону</b>.</li><li>И подтверждён <b>слом структуры</b> (коррекция = импульс, импульс не обновил) — не «мне кажется».</li><li>Причину запишите в «Почему закрылась», а потом заполните ЧБД. Если «зря закрыл» повторяется — не смотрите в терминал: только стоп или тейк.</li></ul></div></details>';
+  h += mgmtLog(t);
+  box.innerHTML = h;
+  $("#mg_cur").addEventListener("change", function () { var v = num(this.value); if (isFinite(v)) MGCUR[t.id] = v; else delete MGCUR[t.id]; renderMgmt(); });
+  $("#mg_be").onclick = function () { mgmtAct(function (o) { if (atBE(o)) { toast("Стоп уже в безубытке"); return false; } if (!isFinite(num(o.stop0))) o.stop0 = o.stop; o.stop = o.entry; addLog(o, "Стоп в безубыток (" + px(num(o.entry)) + ")"); toast("Стоп перенесён в безубыток"); }); };
+  $("#mg_move").onclick = function () { var ns = num($("#mg_stop").value), why = $("#mg_why").value; mgmtAct(function (o) {
+    if (!isFinite(ns)) { toast("Укажите новый стоп"); return false; }
+    if (sgn(o) * (ns - num(o.stop)) <= 0) { toast("Стоп двигаем только в сторону прибыли"); return false; }
+    if (isFinite(cur) && sgn(o) * (cur - ns) <= 0) { toast("Новый стоп по другую сторону от текущей цены"); return false; }
+    if (!isFinite(num(o.stop0))) o.stop0 = o.stop; o.stop = ns; addLog(o, "Стоп перенесён на " + px(ns) + " — " + why); toast("Стоп перенесён"); }); };
+  $("#mg_part").onclick = function () { var pct = +$("#mg_pct").value, p = num($("#mg_px").value); if (!isFinite(p)) p = cur; mgmtAct(function (o) {
+    var n = Math.floor(num(o.shares) * pct / 100);
+    if (!isFinite(p)) { toast("Укажите цену фиксации"); return false; }
+    if (!(n >= 1)) { toast("Слишком мало акций для частичного выхода"); return false; }
+    var pnl = sgn(o) * (p - num(o.entry)) * n;
+    (o.partials = o.partials || []).push({ d: today(), n: n, px: p, pnl: +pnl.toFixed(2) });
+    o.shares = num(o.shares) - n; addLog(o, "Зафиксировано " + pct + "% (" + n + " акц.) по " + px(p) + ": " + money(pnl));
+    toast("Часть зафиксирована. Не забудьте стоп в безубыток"); }); };
+  $("#mg_add").onclick = function () {
+    addTo = t.id; $("#t_ticker").value = t.ticker; $("#t_tf").value = t.tf || "D"; setDir(t.dir || "long", true);
+    checks = {}; $$("#checklist input").forEach(function (i) { i.checked = false; });
+    location.hash = "#trade"; onTradeChange(); toast("Докупка: найдите новую ТВХ, поставьте стоп за её паттерн и посчитайте риск");
+  };
+}
+
 function toCsv() {
-  var cols = ["date", "ticker", "tf", "dir", "setup", "trigger", "reason", "before", "deposit", "riskPct", "riskUsd", "entry", "stop", "take", "shares", "status", "exit", "pnl", "closeWhy", "chbd", "after"];
-  var head = ["Дата", "Тикер", "ТФ", "Сторона", "Сетап", "Триггер", "Почему вхожу", "Состояние до", "Депозит", "Риск %", "Риск $", "Вход", "Стоп", "Тейк", "Акций", "Статус", "Выход", "Итог $", "Почему закрылась", "ЧБД", "Состояние после"];
+  var cols = ["date", "ticker", "tf", "dir", "setup", "trigger", "reason", "before", "deposit", "riskPct", "riskUsd", "entry", "stop0", "stop", "take", "shares", "status", "exit", "pnl", "closeWhy", "chbd", "after", "log"];
+  var head = ["Дата", "Тикер", "ТФ", "Сторона", "Сетап", "Триггер", "Почему вхожу", "Состояние до", "Депозит", "Риск %", "Риск $", "Вход", "Стоп начальный", "Стоп", "Тейк", "Акций", "Статус", "Выход", "Итог $", "Почему закрылась", "ЧБД", "Состояние после", "Сопровождение"];
   var q = function (v) { v = v == null ? "" : String(v); return /[";\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  return [head.join(";")].concat(Store.list("trades").map(function (t) { return cols.map(function (c) { return q(c === "status" ? STATUS[t.status] || t.status : c === "dir" ? (t.dir === "short" ? "шорт" : "покупка") : t[c]); }).join(";"); })).join("\n");
+  var val = function (t, c) {
+    if (c === "status") return STATUS[t.status] || t.status;
+    if (c === "dir") return t.dir === "short" ? "шорт" : "покупка";
+    if (c === "stop0") return isFinite(num(t.stop0)) ? t.stop0 : t.stop;
+    if (c === "log") return (t.log || []).map(function (x) { return x.d + " " + x.t; }).join(" | ");
+    if (c === "setup") return (t.setup || "") + (t.parent ? " (докупка)" : "");
+    return t[c];
+  };
+  return [head.join(";")].concat(Store.list("trades").map(function (t) { return cols.map(function (c) { return q(val(t, c)); }).join(";"); })).join("\n");
 }
 function initJournal() {
   $$("[data-jf]").forEach(function (b) { b.onclick = function () { jFilter = b.dataset.jf; $$("[data-jf]").forEach(function (x) { x.classList.toggle("on", x === b); }); renderJournal(); }; });
@@ -611,11 +766,13 @@ function initGuide() {
   ];
   var sec = function (title, body, open) { return '<details class="sec"' + (open ? " open" : "") + "><summary>" + esc(title) + '</summary><div class="body">' + body + "</div></details>"; };
   var html = '<div class="panel stack"><h2>Лучшие сетапы автора</h2><div class="cards">' + cards.map(function (c) { return '<div class="card">' + c.svg + "<h4>" + esc(c.t) + "</h4><p>" + esc(c.p) + "</p></div>"; }).join("") + "</div></div>";
-  html += sec("Как работает сканер", "<p>Каждый вечер после закрытия рынка США GitHub скачивает котировки ~1000 бумаг с капитализацией от 10 млрд $ и строит развороты (зигзаг по ATR) на месяце, неделе и дне. Кнопка «Сканировать» проверяет их по правилам ниже прямо на устройстве.</p><ul><li><b>Тренд</b> — по 4 точкам: три последних разворота плюс текущая цена.</li><li><b>Фильтр месяца</b>: против месячного тренда сделок нет.</li><li><b>В зоне</b> — цена в пределах ~0,75 ATR от уровня входа; <b>на подходе</b> — до 4 ATR: ставьте алерт.</li><li><b>Стоп</b> — за уровнем на 0,5 ATR, <b>тейк</b> — 80% пути до следующего уровня (или высота фигуры).</li><li><b>Триггер</b> — ложный пробой уровня, пинбар, поглощение или харами на последней закрытой свече.</li></ul><p>Сканер находит кандидатов. Решение о входе — по графику и чек-листу.</p>", true);
+  html += sec("Как работает сканер", "<p>Каждый вечер после закрытия рынка США GitHub скачивает котировки ~1000 бумаг с капитализацией от 10 млрд $ и строит развороты (зигзаг по ATR) на месяце, неделе и дне. Кнопка «Сканировать» проверяет их по правилам ниже прямо на устройстве.</p><ul><li><b>Тренд</b> — по 4 точкам: три последних разворота плюс текущая цена.</li><li><b>Фильтр месяца</b>: против месячного тренда сделок нет.</li><li><b>В зоне</b> — цена в пределах ~0,75 ATR от уровня входа; <b>на подходе</b> — до 4 ATR: ставьте алерт.</li><li><b>Стоп</b> — за уровнем на 0,5 ATR, <b>тейк</b> — 80% пути до следующего уровня (или высота фигуры).</li><li><b>Триггер</b> — ложный пробой уровня, пинбар, поглощение или харами на последней закрытой свече.</li><li><b>RSI</b> — зелёные метки: выход из перепроданности или конвергенция (доп. подтверждение); серые: предупреждения (ждём выхода, старший ТФ в перекупленности).</li></ul><p>Сканер находит кандидатов. Решение о входе — по графику и чек-листу.</p>", true);
   html += sec("Три кита и главное правило", "<ul><li><b>Тренд — твой друг.</b> Против тренда не торгуем.</li><li><b>Цена учитывает всё.</b></li><li><b>История повторяется.</b></li></ul><p><b>В импульсе не покупаем и не продаём. Ждём окончания коррекции.</b> MN → W → D.</p>");
   html += sec("Азбука: шесть «букв»", '<div class="tbl-wrap"><table><thead><tr><th>Импульсы</th><th>Коррекции</th></tr></thead><tbody><tr><td><b>Обновил</b> — тренд</td><td><b>Стандартная</b> — тренд продолжается</td></tr><tr><td><b>Вровень</b> — флет под вопросом</td><td><b>Вровень</b> — флет</td></tr><tr><td><b>Не обновил</b> — первый признак слома</td><td><b>= новый импульс</b> — слом</td></tr></tbody></table></div><p>Пройдено 61,8% старшего импульса — покупки не рассматриваем.</p>');
   html += sec("Триггеры входа", "<ul><li><b>Ложный пробой</b> (1 свеча, 2 свечи, харами, поглощение) — стоп за ложным пробоем.</li><li><b>Отскок</b> пинбаром или двумя свечами — только с подтверждением сломом на младшем ТФ.</li><li><b>Пробой</b>: с 1-го раза не торгуем, со 2-го — по закрытию свечи, с 3-го — любимая ТВХ.</li><li><b>Ретест</b>: уровни, пробитые с 3-го раза, и уровни слома ретестятся почти всегда.</li></ul>");
-  html += sec("Риск, тейк и сопровождение", "<ul><li>Риск 1% на сделку с комиссией, до ~15 позиций.</li><li>R:R: 1:1 — минус; 1:2 — минимум; цель 1:3+.</li><li>Тейк — следующий уровень, ~80% пути.</li><li>Стоп не двигаем; при доборе — стоп первой части в безубыток, добор в 2 раза меньше.</li><li>Перед отчётом не входим.</li></ul>");
+  html += sec("RSI (индекс относительной силы)", "<ul><li><b>RSI(14), уровни 30 и 70.</b> Выше 70 — перекупленность, ниже 30 — перепроданность, середина — «зона неинтересно»: сигналов там нет.</li><li><b>Только по тренду.</b> Выход из перепроданности (пересечение 30 снизу вверх) — дополнительное подтверждение запланированной ТВХ: ретест, ложный пробой, нижняя граница флета. В шорт — выход из перекупленности через 70. Против тренда сигнал обманный.</li><li><b>Конвергенция</b> у зоны входа: цена обновила минимум, а RSI — нет (продавцы кончаются). Сильный повод искать покупку.</li><li><b>Дивергенция</b> на максимумах: цена обновила максимум, RSI — нет (покупатель кончился). Фиксируем вручную.</li><li>Перекупленность на <b>D</b> — идут активные покупки. На <b>W и MN</b> — пора думать о фиксации. Все ТФ в перекупленности — продолжение 50/50, лучше фиксировать.</li><li>На акциях D, W, MN редко заходят в зоны — входы по RSI ищите на <b>H4</b> (и H1). Уход H1/H4 в перекупленность по тренду — пошли большие деньги: можно войти раньше закрытия дневной свечи (ближе к концу сессии), стоп короче, без риска гэпа.</li><li>Скользящие (MA) запаздывают: если техника уже дала ложный пробой, а 50 и 200 вот-вот пересекутся — входим по технике, не ждём пересечения.</li><li>RSI, свечи, скользящие — только помощники. Основа — теханализ и фундамент.</li></ul>");
+  html += sec("Риск и тейк", "<ul><li>Риск 1% на сделку с комиссией, до ~15 позиций.</li><li>R:R: 1:1 — минус; 1:2 — минимум; цель 1:3+. При 1:3 доля прибыльных 45% — очень хороший результат, 50% — удвоение депозита.</li><li>Тейк — следующий уровень, ~80% пути.</li><li>Перед отчётом не входим, прибыльные позиции частично фиксируем.</li></ul>");
+  html += sec("Сопровождение сделки", "<ul><li><b>Стоп двигаем только при новой ТВХ</b> (ретест, пробой, выход из накопления, ложный пробой), лучше с подтверждением на H4. Стоп всегда за последним минимумом — за паттерном последнего входа.</li><li><b>Докупка</b> — отдельная сделка: своя ТВХ, свой стоп, риск от текущего депозита. Тейк общий (по старшему ТФ). Стопы всех прежних частей переносим на стоп докупки: первые части оказываются в безубытке или в плюсе.</li><li><b>У тейка</b>: закрыть всё; или на личном счёте при сильном тренде — закрыть 50% (иногда 80%), стоп в безубыток, тейк убрать и держать по тренду.</li><li><b>Закрыть вручную</b> — если нарисовался максимум (две свечи против нас) и подтверждён слом структуры, а не «кажется». Причину — в журнал.</li><li><b>Правило сейфа</b> (по желанию): путь до тейка делим на 3 части; прошли треть — закрыть 50% и стоп в безубыток, дальше стоп подтягиваем. Лучше работает на W и MN, на форексе и крипте; придумано, чтобы новичок не терял много.</li><li>Сопровождение — ежедневно ~30 минут. Если по журналу «зря закрыл» повторяется — не смотрите в терминал: только стоп или тейк.</li><li>1–2 числа месяца проверяйте закрытие месячных свечей.</li></ul>");
   html += '<p class="note">Конспект обучающего курса для самостоятельной работы, не инвестиционная рекомендация. Графики: TradingView Lightweight Charts™.</p>';
   $("#guideBody").innerHTML = html;
 }
