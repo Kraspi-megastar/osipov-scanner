@@ -99,6 +99,8 @@ tr.ex td{color:var(--muted);font-style:italic}
 .pos{color:var(--up)} .neg{color:var(--down)}
 .empty{padding:22px;text-align:center;color:var(--muted)}
 .edit-panel{border:2px solid var(--accent)}
+.qr{background:#fff;border-radius:8px;padding:6px;width:220px;max-width:100%}
+.qr svg{display:block;width:100%;height:auto}
 /* сканер */
 .hits{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
 .hit{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--muted);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:6px;cursor:pointer;text-align:left;font:inherit;color:inherit}
@@ -173,7 +175,7 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
       <details id="scanDetails" open><summary class="small" style="cursor:pointer;font-weight:600">Настройки сканера</summary>
       <div class="stack small" style="margin-top:10px">
         <div><h3>Таймфрейм паттерна</h3>
-          <div class="seg" role="group" aria-label="Таймфрейм"><button type="button" data-o-tf="D">День</button><button type="button" data-o-tf="W">Неделя</button></div></div>
+          <div class="seg" role="group" aria-label="Таймфрейм"><button type="button" data-o-tf="H4">4 часа</button><button type="button" data-o-tf="D">День</button><button type="button" data-o-tf="W">Неделя</button></div></div>
         <div><h3>Направление</h3>
           <div class="seg" role="group" aria-label="Направление"><button type="button" data-o-dir="long">Покупки</button><button type="button" data-o-dir="short">Шорты</button><button type="button" data-o-dir="both">Оба</button></div></div>
         <div><h3>Сетапы</h3><div class="opts" id="oSetups"></div></div>
@@ -277,7 +279,7 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
   <div class="grid2">
     <div class="panel stack">
       <h2>Синхронизация ПК и телефона</h2>
-      <p class="note">Журнал и watchlist хранятся в вашем закрытом репозитории на GitHub. Ключ доступа вводится один раз на каждом устройстве и остаётся только в этом браузере.</p>
+      <p class="note">Журнал, сделки, watchlist, алерты и настройки калькулятора и сканера хранятся в вашем закрытом репозитории на GitHub. Ключ вводится один раз на первом устройстве, остальные подключаются QR-кодом или кодом подключения (справа).</p>
       <div class="fields wide">
         <label class="f"><span>Владелец (логин GitHub)</span><input type="text" id="s_owner" autocapitalize="off" autocomplete="off"></label>
         <label class="f"><span>Репозиторий журнала</span><input type="text" id="s_repo" autocapitalize="off" autocomplete="off"></label>
@@ -293,6 +295,16 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
         <li>Generate token, скопируйте и вставьте сюда. На телефоне повторите вставку (можно переслать себе в «Избранное» Telegram и удалить сообщение).</li></ol></div></details>
     </div>
     <div class="stack">
+      <div class="panel stack">
+        <h2>Подключить другое устройство</h2>
+        <p class="note">Телефон или второй компьютер подключается без ввода ключа: отсканируйте QR-код камерой телефона или откройте ссылку. После этого всё общее и обновляется само.</p>
+        <div class="row"><button class="btn pri" type="button" id="showPair">Показать QR-код и ссылку</button></div>
+        <div id="pairBox"></div>
+        <h3>Подключить это устройство по коду</h3>
+        <p class="note">Для iPhone: приложение с экрана «Домой» не видит то, что открылось из камеры в Safari. На подключённом устройстве нажмите «Скопировать код», перешлите его себе и вставьте сюда.</p>
+        <div class="row"><input type="text" id="pairInput" placeholder="OSV1-…" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1;min-width:180px"><button class="btn" type="button" id="pairConnect">Подключить</button></div>
+        <div class="note" id="pairMsg"></div>
+      </div>
       <div class="panel stack">
         <h2>Данные и алерты</h2>
         <div class="note" id="metaInfo"></div>
@@ -322,7 +334,7 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
   <div class="sheet">
     <div class="sheet-h">
       <div><b id="chTitle" style="font-size:18px">—</b> <span class="note" id="chName"></span></div>
-      <div class="seg" role="group" aria-label="Таймфрейм графика"><button type="button" data-ctf="M">Месяц</button><button type="button" data-ctf="W">Неделя</button><button type="button" data-ctf="D" class="on">День</button></div>
+      <div class="seg" role="group" aria-label="Таймфрейм графика"><button type="button" data-ctf="M">Месяц</button><button type="button" data-ctf="W">Неделя</button><button type="button" data-ctf="D" class="on">День</button><button type="button" data-ctf="H4">4 часа</button></div>
       <span style="flex:1"></span>
       <button class="btn ghost" type="button" id="chClose">Закрыть</button>
     </div>
@@ -335,6 +347,7 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
 <div class="toast" id="toast" role="status"></div>
 
 <script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="vendor/qrcode.js"></script>
 <script src="scanner.js"></script>
 <script src="app.js"></script>
 </body>

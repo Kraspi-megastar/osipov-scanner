@@ -2,7 +2,8 @@
 
 Запускается в GitHub Actions после закрытия рынка США.
 1. Список бумаг: все акции NASDAQ/NYSE/AMEX с капитализацией от MIN_CAP (по умолчанию 10 млрд $).
-2. Котировки (yfinance): месяц (до 25 лет), неделя (10 лет), день (2 года).
+2. Котировки (yfinance): месяц (до 25 лет), неделя (10 лет), день (2 года), 4 часа (год; собираются из часовых свечей
+   по сессии США: 9:30–13:30 и 13:30–16:00 по Нью-Йорку, как в TradingView).
 3. Для каждого таймфрейма: развороты (зигзаг по ATR), ATR, RSI(14), последние две свечи и свечные модели.
 4. Даты ближайших отчётов.
 Результат:
@@ -25,7 +26,7 @@ import pandas as pd
 
 MIN_CAP = float(os.environ.get("MIN_CAP", 10e9))
 # Чувствительность зигзага: разворот считается, когда цена прошла K * ATR(14) от экстремума.
-ZZ_K = {"D": 2.5, "W": 2.0, "M": 1.5}
+ZZ_K = {"H4": 2.5, "D": 2.5, "W": 2.0, "M": 1.5}
 KEEP_PIVOTS = 16
 # Облигации, привилегированные акции, варранты и т.п. — не обычные акции, сканер их не смотрит
 NOT_COMMON = re.compile(r"%|\b(notes?|debentures?|preferred|warrants?|rights|units?|subordinated|perpetual|depositary shares, each)\b", re.I)
@@ -103,9 +104,32 @@ def download(tickers, period, interval, batch=80):
     return res
 
 
+def to_h4(df):
+    """Часовые свечи → 4-часовые по сессии: 9:30–13:30 и 13:30–16:00 (время Нью-Йорка).
+    Индекс результата — «наивное» нью-йоркское время начала свечи."""
+    if df is None or df.empty:
+        return df
+    idx = df.index
+    if idx.tz is not None:
+        idx = idx.tz_convert("America/New_York").tz_localize(None)
+    d = df.copy()
+    d.index = idx
+    mins = d.index.hour * 60 + d.index.minute
+    d = d[(mins >= 570) & (mins < 960)]  # только основная сессия
+    if d.empty:
+        return d
+    mins = d.index.hour * 60 + d.index.minute
+    start = pd.to_datetime(d.index.date) + pd.to_timedelta(np.where(mins >= 810, 810, 570), unit="m")
+    g = d.groupby(start)
+    out = pd.DataFrame({"Open": g["Open"].first(), "High": g["High"].max(), "Low": g["Low"].min(), "Close": g["Close"].last()})
+    return out.dropna()
+
+
 def to_bars(df, limit):
     df = df.tail(limit)
-    t = [d.strftime("%Y-%m-%d") for d in df.index]
+    intraday = len(df) > 1 and any(x.hour or x.minute for x in df.index[-3:])
+    # дневные и старше — дата строкой; H4 — секунды (нью-йоркское время, записанное как UTC: график покажет 9:30 и 13:30)
+    t = [int(pd.Timestamp(d).tz_localize(None).value // 10**9) if intraday else d.strftime("%Y-%m-%d") for d in df.index]
     cols = [df[c].to_numpy(dtype=float) for c in ("Open", "High", "Low", "Close")]
     return t, cols
 
@@ -278,10 +302,13 @@ def build(out, frames=None, universe=None, earnings=None):
         frames = {"M": download(syms, "max", "1mo"),
                   "W": download(syms, "10y", "1wk"),
                   "D": download(syms, "2y", "1d")}
+        if os.environ.get("SKIP_H4") != "1":
+            hourly = download(syms, "1y", "1h")
+            frames["H4"] = {s: to_h4(df) for s, df in hourly.items()}
     if earnings is None:
         earnings = load_earnings(syms) if os.environ.get("SKIP_EARNINGS") != "1" else {}
-    limits = {"M": 300, "W": 520, "D": 500}
-    items, failed = [], []
+    limits = {"M": 300, "W": 520, "D": 500, "H4": 500}
+    items, failed, h4n = [], [], 0
     for u in uni:
         s = u["s"]
         rec = dict(u)
@@ -301,6 +328,13 @@ def build(out, frames=None, universe=None, earnings=None):
         if not ok:
             failed.append(s)
             continue
+        h4 = frames.get("H4", {}).get(s)  # H4 необязателен: без него бумага остаётся в сканере
+        if h4 is not None and len(h4) >= 40:
+            st, ch = tf_struct(h4, "H4", limits["H4"])
+            if st is not None:
+                rec["H4"] = st
+                chart["H4"] = ch
+                h4n += 1
         rec["px"] = rec["D"]["lb"][3]
         if s in earnings:
             rec["e"] = earnings[s]
@@ -310,7 +344,7 @@ def build(out, frames=None, universe=None, earnings=None):
     now = datetime.now(timezone.utc).isoformat(timespec="minutes")
     with open(prev, "w", encoding="utf-8") as f:
         json.dump({"updated": now, "zz": ZZ_K, "t": items}, f, ensure_ascii=False, separators=(",", ":"))
-    meta = {"updated": now, "count": len(items), "failed": failed[:200], "failedCount": len(failed),
+    meta = {"updated": now, "count": len(items), "h4": h4n, "failed": failed[:200], "failedCount": len(failed),
             "minCapBn": MIN_CAP / 1e9}
     with open(os.path.join(out, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)

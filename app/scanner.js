@@ -288,6 +288,12 @@
     if (e.exit) ok.push(long ? "RSI вышел из перепроданности" : "RSI вышел из перекупленности");
     if (e.conv) ok.push(long ? "RSI конвергенция" : "RSI дивергенция у максимумов");
     if (e.os) warn.push(long ? "RSI в перепроданности: ждём выхода через 30" : "RSI в перекупленности: ждём выхода через 70");
+    if (tf !== "H4" && t.H4) {  // автор ищет RSI-входы на H4: выход из зоны там — ранний сигнал для дневного сетапа
+      var h4 = rsiInfo(view(t.H4, sgn));
+      if (h4.exit) ok.push(long ? "H4: RSI вышел из перепроданности" : "H4: RSI вышел из перекупленности");
+      if (h4.conv) ok.push(long ? "H4: RSI конвергенция" : "H4: RSI дивергенция у максимумов");
+      if (h4.ob) ok.push(long ? "H4 в перекупленности: идут активные покупки" : "H4 в перепроданности: идут активные продажи");
+    }
     var hiW = long ? "перекупленности" : "перепроданности";
     if (w.ob && m.ob && rsiInfo(view(t.D, sgn)).ob) warn.push("все ТФ в " + hiW + ": продолжение 50/50");
     else if (w.ob || m.ob) warn.push((m.ob ? "MN" : "W") + " в " + hiW + ": ближе к фиксации, чем ко входу");
@@ -299,7 +305,7 @@
     return Math.round((new Date(d + "T00:00:00Z") - new Date(today + "T00:00:00Z")) / 864e5);
   }
 
-  /* cfg: {tf:'D'|'W', dirs:['long','short'], setups:{key:true}, tol:0.75, stopAtr:0.5,
+  /* cfg: {tf:'H4'|'D'|'W', dirs:['long','short'], setups:{key:true}, tol:0.75, stopAtr:0.5,
            mnFilter:true, wFilter:true, earnDays:14, earnExclude:true, minRR:2, zones:['in','near'],
            minCap:10, sector:'', today:'YYYY-MM-DD'} */
   function scanTicker(t, cfg) {
@@ -311,7 +317,7 @@
       if (!v || !(v.a > 0)) return;
       var mT = trend(view(t.M, sgn)), wT = trend(view(t.W, sgn));
       if (cfg.mnFilter && mT === "down") return;           // против месячного тренда не торгуем
-      if (cfg.wFilter && cfg.tf === "D" && wT === "down") return;
+      if (cfg.wFilter && (cfg.tf === "D" || cfg.tf === "H4") && wT === "down") return;
       var seen = {};
       Object.keys(DETECTORS).forEach(function (key) {
         if (!cfg.setups[key]) return;

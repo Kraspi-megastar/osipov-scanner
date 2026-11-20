@@ -112,9 +112,17 @@ var Sync = {
       var remote = j ? JSON.parse(b64dec(j.content)) : { trades: [], plans: [], settings: {} };
       self.sha = j ? j.sha : null;
       var loc = Store.st;
-      var merged = { version: 2, trades: mergeArr(remote.trades, loc.trades), plans: mergeArr(remote.plans, loc.plans), settings: Object.assign({}, loc.settings || {}, remote.settings || {}) };
-      var changed = JSON.stringify(merged.trades) !== JSON.stringify(remote.trades || []) || JSON.stringify(merged.plans) !== JSON.stringify(remote.plans || []);
-      Store.st = merged; lsSet(LS_STATE, merged); renderAll(); renderSettingsInfo();
+      var lp = loc.prefs || {}, rp = remote.prefs || {};
+      var merged = { version: 2, trades: mergeArr(remote.trades, loc.trades), plans: mergeArr(remote.plans, loc.plans), settings: Object.assign({}, loc.settings || {}, remote.settings || {}),
+        prefs: (rp.u || 0) > (lp.u || 0) ? rp : lp };
+      var changed = JSON.stringify(merged.trades) !== JSON.stringify(remote.trades || []) || JSON.stringify(merged.plans) !== JSON.stringify(remote.plans || []) ||
+        stable(merged.prefs || {}) !== stable(rp);
+      var newPrefs = merged.prefs === rp && rp.u && rp.u !== lp.u;
+      // открытая форма: если её не трогали — подтягиваем свежую версию с другого устройства, если правят — не мешаем
+      var fresher = function (ed, arr) { if (!ed || ed.isNew || ed.dirty) return; var f = arr.find(function (x) { return x.id === ed.obj.id; }); if (f && (f.u || 0) > (ed.obj.u || 0)) ed.obj = JSON.parse(JSON.stringify(f)); };
+      fresher(editing, merged.trades); fresher(pEdit, merged.plans);
+      Store.st = merged; lsSet(LS_STATE, merged); renderAll(true); renderSettingsInfo();
+      if (newPrefs) applyPrefs(rp);
       self.ok = true;
       self.status("ok", "Журнал: синхронизирован");
       if (changed || !j) return self.push();
@@ -144,6 +152,56 @@ var Sync = {
 
 /* ======================= навигация ======================= */
 var VIEWS = ["scan", "trade", "plan", "journal", "guide", "settings"];
+/* ======================= общие настройки (синхронизируются) ======================= */
+// Депозит, риск, комиссии и настройки сканера — общие для всех устройств.
+var prefsTimer = null;
+function prefsLocal() {
+  var c = readCalc();
+  return { calc: { dep: c.dep, risk: c.risk, comm: c.comm, fix: c.fix, tp: c.tp }, scan: JSON.parse(JSON.stringify(SCFG)) };
+}
+// JSON без зависимости от порядка ключей: иначе два устройства переписывали бы настройки друг другу по кругу
+function stable(o) {
+  if (o === null || typeof o !== "object") return JSON.stringify(o === undefined || (typeof o === "number" && !isFinite(o)) ? null : o);
+  if (Array.isArray(o)) return "[" + o.map(stable).join(",") + "]";
+  return "{" + Object.keys(o).filter(function (k) { return o[k] !== undefined; }).sort().map(function (k) { return JSON.stringify(k) + ":" + stable(o[k]); }).join(",") + "}";
+}
+function savePrefs(now) {
+  clearTimeout(prefsTimer);
+  prefsTimer = setTimeout(function () {
+    var p = prefsLocal(), cur = Store.st.prefs || {};
+    if (stable({ calc: cur.calc, scan: cur.scan }) === stable(p)) return;
+    p.u = Date.now(); Store.st.prefs = p; lsSet(LS_STATE, Store.st); Sync.schedule();
+  }, now ? 0 : 800);
+}
+function applyPrefs(p) {
+  if (!p) return;
+  if (p.calc) {
+    var c = readCalc();
+    ["dep", "risk", "comm", "fix"].forEach(function (k) { if (isFinite(num(p.calc[k]))) c[k] = p.calc[k]; });
+    if (p.calc.tp) c.tp = p.calc.tp;
+    setCalc(c);
+  }
+  if (p.scan) { Object.assign(SCFG, p.scan); lsSet(LS_SCAN, SCFG); scanInputs(); }
+  onTradeChange();
+}
+
+/* ======================= подключение устройства ======================= */
+function b64url(s) { return b64enc(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function pairCode() { var c = Sync.cfg; return "OSV1-" + b64url(JSON.stringify({ o: c.owner, r: c.repo, s: c.scanRepo || "osipov-scanner", t: c.token })); }
+function pairLink() { return location.origin + location.pathname + "#connect=" + pairCode(); }
+function readPairCode(code) {
+  var m = String(code || "").match(/OSV1-([A-Za-z0-9_-]+)/); if (!m) return null;
+  var b = m[1].replace(/-/g, "+").replace(/_/g, "/"); while (b.length % 4) b += "=";
+  try { var j = JSON.parse(b64dec(b)); return j.o && j.r && j.t ? { owner: j.o, repo: j.r, scanRepo: j.s || "osipov-scanner", token: j.t } : null; } catch (e) { return null; }
+}
+var PAIRED = null; // сообщение после подключения по ссылке
+(function () {
+  if (!/^#connect=/.test(location.hash)) return;
+  var cfg = readPairCode(location.hash);
+  try { history.replaceState(null, "", location.pathname + "#journal"); } catch (e) { location.hash = "#journal"; }
+  if (cfg) { Sync.cfg = cfg; lsSet(LS_SYNC, cfg); PAIRED = "Устройство подключено: журнал, watchlist и настройки загружаются"; }
+  else PAIRED = "Код подключения не распознан — скопируйте его заново";
+})();
 function route() {
   var v = (location.hash || "#scan").slice(1);
   if (VIEWS.indexOf(v) < 0) v = "scan";
@@ -164,7 +222,7 @@ function loadData() {
     DATA.uni.forEach(function (t) { DATA.map[t.s] = t; if (t.sec) secs[t.sec] = 1; });
     DATA.sectors = Object.keys(secs).sort();
     var upd = DATA.meta.updated ? new Date(DATA.meta.updated) : null;
-    var info = DATA.uni.length + " бумаг · " + (upd ? upd.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "");
+    var info = DATA.uni.length + " бумаг" + (DATA.meta.h4 ? " (H4: " + DATA.meta.h4 + ")" : "") + " · " + (upd ? upd.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "");
     $("#dataInfo").textContent = info;
     $("#metaInfo").textContent = "Котировки: " + info + (DATA.meta.failedCount ? " · не загрузилось: " + DATA.meta.failedCount : "");
     var sel = $("#oSector"), cur = SCFG.sector;
@@ -185,9 +243,7 @@ function initScan() {
   var box = $("#oSetups"), html = "";
   Object.keys(SC.SETUPS).forEach(function (k) { html += '<label><input type="checkbox" data-setup="' + k + '"' + (SCFG.setups[k] ? " checked" : "") + "> " + esc(SC.SETUPS[k]) + "</label>"; });
   box.innerHTML = html;
-  $("#oZoneIn").checked = SCFG.zIn; $("#oZoneNear").checked = SCFG.zNear; $("#oMn").checked = SCFG.mn; $("#oW").checked = SCFG.w;
-  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRsi").checked = !!SCFG.rsi; $("#oRR").value = SCFG.rr; $("#oCap").value = SCFG.cap;
-  segSync();
+  scanInputs();
   $$("[data-o-tf]").forEach(function (b) { b.onclick = function () { SCFG.tf = b.dataset.oTf; segSync(); saveScanCfg(); }; });
   $$("[data-o-dir]").forEach(function (b) { b.onclick = function () { SCFG.dir = b.dataset.oDir; segSync(); saveScanCfg(); }; });
   $("#scanOpts").addEventListener("change", function () { readScanCfg(); saveScanCfg(); });
@@ -199,6 +255,13 @@ function initScan() {
   $("#openTicker").onclick = open;
   $("#tickerSearch").addEventListener("keydown", function (e) { if (e.key === "Enter") open(); });
 }
+function scanInputs() {
+  $$("[data-setup]").forEach(function (i) { i.checked = !!SCFG.setups[i.dataset.setup]; });
+  $("#oZoneIn").checked = SCFG.zIn; $("#oZoneNear").checked = SCFG.zNear; $("#oMn").checked = SCFG.mn; $("#oW").checked = SCFG.w;
+  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRsi").checked = !!SCFG.rsi; $("#oRR").value = SCFG.rr; $("#oCap").value = SCFG.cap;
+  if (SCFG.sector != null && $("#oSector").querySelector('option[value="' + SCFG.sector.replace(/"/g, "") + '"]')) $("#oSector").value = SCFG.sector;
+  segSync();
+}
 function segSync() {
   $$("[data-o-tf]").forEach(function (b) { b.classList.toggle("on", b.dataset.oTf === SCFG.tf); });
   $$("[data-o-dir]").forEach(function (b) { b.classList.toggle("on", b.dataset.oDir === SCFG.dir); });
@@ -208,7 +271,7 @@ function readScanCfg() {
   SCFG.zIn = $("#oZoneIn").checked; SCFG.zNear = $("#oZoneNear").checked; SCFG.mn = $("#oMn").checked; SCFG.w = $("#oW").checked;
   SCFG.earn = $("#oEarn").checked; SCFG.trg = $("#oTrg").checked; SCFG.rsi = $("#oRsi").checked; SCFG.rr = $("#oRR").value; SCFG.cap = num($("#oCap").value) || 0; SCFG.sector = $("#oSector").value;
 }
-function saveScanCfg() { lsSet(LS_SCAN, SCFG); }
+function saveScanCfg() { lsSet(LS_SCAN, SCFG); savePrefs(); }
 function engineCfg(all) {
   var setups = all ? { breakK: 1, breakN: 1, prevHigh: 1, line: 1, flatLow: 1, flatRetest: 1, third: 1, dbl: 1 } : SCFG.setups;
   var zones = all ? ["in", "near"] : [].concat(SCFG.zIn ? ["in"] : [], SCFG.zNear ? ["near"] : []);
@@ -256,7 +319,7 @@ function renderHits() {
 /* ======================= график ======================= */
 var CH = { chart: null, s: null, hit: null, tf: "D", data: null, ro: null };
 function openChart(s, hit) {
-  CH.s = s; CH.hit = hit; CH.tf = hit ? (hit.tf === "W" ? "W" : "D") : "D";
+  CH.s = s; CH.hit = hit; CH.tf = hit ? (hit.tf === "W" || hit.tf === "H4" ? hit.tf : "D") : "D";
   var t = DATA.map[s] || {};
   $("#chTitle").textContent = s; $("#chName").textContent = (t.n || "") + (t.sec ? " · " + t.sec : "") + (t.mc ? " · " + fmt(t.mc, 0) + " млрд $" : "");
   $("#chartModal").classList.add("on"); document.body.style.overflow = "hidden";
@@ -274,10 +337,11 @@ function drawChart() {
   var LC = window.LightweightCharts;
   var chart = LC.createChart(box, { autoSize: true, layout: { background: { type: "solid", color: css("--panel") }, textColor: css("--muted"), fontFamily: css("--font-body") },
     grid: { vertLines: { color: css("--line") }, horzLines: { color: css("--line") } }, rightPriceScale: { borderColor: css("--line") },
-    timeScale: { borderColor: css("--line") }, localization: { locale: "ru-RU" } });
+    timeScale: { borderColor: css("--line"), timeVisible: CH.tf === "H4", secondsVisible: false }, localization: { locale: "ru-RU" } });
   var up = css("--up"), dn = css("--down");
   var ser = chart.addCandlestickSeries({ upColor: up, downColor: dn, wickUpColor: up, wickDownColor: dn, borderVisible: false });
   var rows = CH.data[CH.tf] || [];
+  if (!rows.length) { chart.remove(); box.innerHTML = '<div class="empty">' + (CH.tf === "H4" ? "4-часовых свечей по этой бумаге пока нет: они появятся после ближайшего обновления котировок." : "Нет данных.") + "</div>"; return; }
   ser.setData(rows.map(function (r) { return { time: r[0], open: r[1], high: r[2], low: r[3], close: r[4] }; }));
   // RSI(14) отдельной панелью снизу: 30 / 70, середина — «зона неинтересно»
   ser.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.27 } });
@@ -314,14 +378,14 @@ function rsiSeries(c, n) {
 }
 function renderSide() {
   var s = CH.s, t = DATA.map[s] || {}, h = CH.hit;
-  var found = h ? [h] : (DATA.map[s] ? ["D", "W"].reduce(function (acc, tf) {
+  var found = h ? [h] : (DATA.map[s] ? ["D", "W", "H4"].filter(function (tf) { return t[tf]; }).reduce(function (acc, tf) {
     var c = engineCfg(true); c.tf = tf; c.dirs = ["long", "short"];
     return acc.concat(SC.scanTicker(t, c));
   }, []) : []);
   var mT = SC.trend(SC.view(t.M, 1)), wT = SC.trend(SC.view(t.W, 1)), dT = SC.trend(SC.view(t.D, 1));
   var ed = daysTo(t.e);
   var html = '<div class="row">' + trendTag(mT, "MN") + trendTag(wT, "W") + trendTag(dT, "D") + "</div>";
-  html += '<div class="small">RSI(14): ' + ["M", "W", "D"].map(function (k) { var x = rsiVal(t, k); return (k === "M" ? "MN" : k) + " <b class=\"mono\">" + (isFinite(x) ? fmt(x, 0) : "—") + "</b>" + rsiZone(x); }).join(" · ") + "</div>";
+  html += '<div class="small">RSI(14): ' + ["M", "W", "D", "H4"].filter(function (k) { return t[k]; }).map(function (k) { var x = rsiVal(t, k); return (k === "M" ? "MN" : k) + " <b class=\"mono\">" + (isFinite(x) ? fmt(x, 0) : "—") + "</b>" + rsiZone(x); }).join(" · ") + "</div>";
   html += '<div class="small">Цена: <b class="mono">' + px(t.px) + "</b>" + (t.e ? ' · отчёт: <b>' + esc(t.e) + "</b>" + (isFinite(ed) && ed >= 0 && ed <= 14 ? ' <span class="tag down">через ' + ed + " дн.</span>" : "") : "") + "</div>";
   if (found.length) {
     var f = found[0];
@@ -396,7 +460,7 @@ function setCalc(C) { $("#c_dep").value = C.dep; $("#c_risk").value = C.risk; $(
 function prefillTrade(s, h) {
   $("#t_ticker").value = s;
   if (h) {
-    $("#t_setup").value = JSETUP[h.k] || SETUPS[0]; $("#t_tf").value = h.tf === "W" ? "W" : "D";
+    $("#t_setup").value = JSETUP[h.k] || SETUPS[0]; $("#t_tf").value = h.tf === "W" || h.tf === "H4" ? h.tf : "D";
     var c = readCalc(); c.entry = +(+h.entry).toFixed(4); c.stop = +(+h.stop).toFixed(4); c.take = +(+h.takeLevel).toFixed(4); c.tp = "0.8";
     setCalc(c); setDir(h.dir, true);
     $("#calcNote").textContent = "Цифры из сканера: вход у уровня, стоп за уровнем на 0,5 ATR, тейк — следующий уровень. Поправьте по факту на графике.";
@@ -460,6 +524,7 @@ function onTradeChange(e) {
   if (e && e.target && e.target.type === "checkbox") checks[e.target.id] = e.target.checked;
   calc();
   clearTimeout(saveUiTimer);
+  savePrefs();
   saveUiTimer = setTimeout(function () { UI = { dir: dir, checks: checks, setup: $("#t_setup").value, trigger: $("#t_trigger").value, ticker: $("#t_ticker").value, tf: $("#t_tf").value, calc: readCalc() }; lsSet(LS_UI, UI); }, 400);
 }
 function reasonText() {
@@ -487,7 +552,7 @@ var EXAMPLES = [
 ];
 function tradeR(t) { var p = num(t.pnl), rk = num(t.riskUsd); return isFinite(p) && rk > 0 ? p / rk : NaN; }
 function closed(t) { return t.status && t.status !== "open"; }
-function renderJournal() {
+function renderJournal(soft) {
   var all = Store.list("trades").sort(function (a, b) { return (b.date || "").localeCompare(a.date || "") || (b.created || 0) - (a.created || 0); });
   var showEx = !all.length, base = showEx ? EXAMPLES : all, rows = base;
   if (jFilter === "open") rows = rows.filter(function (t) { return !closed(t); });
@@ -522,7 +587,7 @@ function renderJournal() {
     sh += "<tr><td>" + esc(k) + '</td><td class="n">' + arr.length + '</td><td class="n">' + fmt(w / arr.length * 100, 0) + '%</td><td class="n ' + (s >= 0 ? "pos" : "neg") + '">' + fmt(s, 2) + '</td><td class="n">' + fmt(av, 2) + "</td><td>" + tag + "</td></tr>";
   });
   $("#jSetups").innerHTML = sh + "</tbody>";
-  renderEdit();
+  if (!(soft && editing && editing.dirty)) renderEdit();
 }
 function fld(n, l, type, v) { return '<label class="f"><span>' + esc(l) + '</span><input name="' + n + '" id="f_' + n + '" type="' + type + '"' + (type === "number" ? ' step="any"' : "") + ' value="' + esc(v == null ? "" : v) + '"></label>'; }
 function sel(n, l, list, v) { return '<label class="f"><span>' + esc(l) + '</span><select name="' + n + '" id="f_' + n + '">' + opts(list, v) + "</select></label>"; }
@@ -536,7 +601,7 @@ function readForm(f, base) {
 function renderEdit() {
   var w = $("#editWrap");
   if (!editing) { w.innerHTML = ""; return; }
-  var t = editing.obj;
+  var t = editing.obj; editing.dirty = false;
   w.innerHTML = '<form class="panel stack edit-panel" id="tradeForm" novalidate><div class="row between"><h2>' + (editing.isNew ? "Новая запись" : "Сделка " + esc(t.ticker || "")) + '</h2><button class="btn ghost" type="button" id="cancelEdit">Закрыть</button></div>' +
     '<h3>Вход</h3><div class="fields">' + fld("date", "Дата", "date", t.date) + fld("ticker", "Тикер", "text", t.ticker) + sel("tf", "ТФ", ["D", "W", "MN", "H4"], t.tf) +
     '<label class="f"><span>Сторона</span><select name="dir" id="f_dir"><option value="long"' + (t.dir !== "short" ? " selected" : "") + '>Покупка</option><option value="short"' + (t.dir === "short" ? " selected" : "") + ">Шорт</option></select></label>" +
@@ -550,7 +615,7 @@ function renderEdit() {
     '<div class="fields wide">' + area("closeWhy", "Почему закрылась", t.closeWhy) + area("chbd", "ЧБД — что было дальше", t.chbd) + area("after", "Состояние после", t.after) + "</div>" +
     '<div class="row"><button class="btn pri" type="submit">Сохранить</button>' + (editing.isNew ? "" : '<button class="btn danger" type="button" id="delTrade">Удалить</button><span class="note" id="delAsk"></span>') + "</div></form>";
   var f = $("#tradeForm");
-  f.addEventListener("input", function (e) { if (["exit", "entry", "shares", "dir"].indexOf(e.target.name) >= 0) autoPnl(); });
+  f.addEventListener("input", function (e) { editing.dirty = true; if (["exit", "entry", "shares", "dir"].indexOf(e.target.name) >= 0) autoPnl(); });
   f.addEventListener("submit", function (e) {
     e.preventDefault();
     var o = readForm(f, editing.obj), moved = 0, mv = o.moveStops; delete o.moveStops;
@@ -703,7 +768,7 @@ function initJournal() {
 
 /* ======================= watchlist ======================= */
 var pEdit = null;
-function renderPlan() {
+function renderPlan(soft) {
   var order = { alert: 0, wait: 1, in: 2, cancel: 3 };
   var rows = Store.list("plans").sort(function (a, b) { return (order[a.status] == null ? 1 : order[a.status]) - (order[b.status] == null ? 1 : order[b.status]) || (b.created || 0) - (a.created || 0); });
   var th = '<thead><tr><th>Тикер</th><th>Сторона</th><th>Чего жду</th><th class="n">Вход / стоп / тейк</th><th>Алерт</th><th>Отчёт</th><th>Статус</th><th></th></tr></thead>';
@@ -715,13 +780,13 @@ function renderPlan() {
       '<td class="row" style="flex-wrap:nowrap">' + (DATA.map[p.ticker] ? '<button class="btn ghost small" type="button" data-pchart="' + esc(p.ticker) + '">График</button>' : "") + '<button class="btn ghost small" type="button" data-pedit="' + esc(p.id) + '">Изменить</button></td></tr>';
   }).join("");
   $("#pTable").innerHTML = th + "<tbody>" + (tb || '<tr><td colspan="8" class="empty">Пусто. Добавляйте бумаги из сканера кнопкой «В watchlist» или вручную.</td></tr>') + "</tbody>";
-  renderPlanEdit();
+  if (!(soft && pEdit && pEdit.dirty)) renderPlanEdit();
 }
 function renderPlanEdit() {
   var w = $("#planEdit"); if (!pEdit) { w.innerHTML = ""; return; }
-  var p = pEdit.obj;
+  var p = pEdit.obj; pEdit.dirty = false;
   w.innerHTML = '<form class="panel stack edit-panel" id="planForm" novalidate><div class="row between"><h2>' + (pEdit.isNew ? "Новая бумага" : esc(p.ticker)) + '</h2><button class="btn ghost" type="button" id="pCancel">Закрыть</button></div>' +
-    '<div class="fields">' + fld("ticker", "Тикер", "text", p.ticker) + sel("tf", "ТФ", ["D", "W", "MN"], p.tf) +
+    '<div class="fields">' + fld("ticker", "Тикер", "text", p.ticker) + sel("tf", "ТФ", ["D", "W", "MN", "H4"], p.tf) +
     '<label class="f"><span>Сторона</span><select name="dir"><option value="long"' + (p.dir !== "short" ? " selected" : "") + '>Покупка</option><option value="short"' + (p.dir === "short" ? " selected" : "") + ">Шорт</option></select></label>" +
     fld("entry", "Вход", "number", p.entry) + fld("stop", "Стоп", "number", p.stop) + fld("take", "Тейк (уровень)", "number", p.take) + fld("report", "Дата отчёта", "date", p.report) +
     '<label class="f"><span>Статус</span><select name="status">' + Object.keys(PSTATUS).map(function (k) { return '<option value="' + k + '"' + (p.status === k ? " selected" : "") + ">" + PSTATUS[k] + "</option>"; }).join("") + "</select></label></div>" +
@@ -732,6 +797,7 @@ function renderPlanEdit() {
     area("note", "Заметка (уровни, условия входа)", p.note) +
     '<div class="row"><button class="btn pri" type="submit">Сохранить</button>' + (pEdit.isNew ? "" : '<button class="btn" type="button" id="pToCalc">В калькулятор</button><button class="btn danger" type="button" id="pDel">Удалить</button>') + "</div></form>";
   var f = $("#planForm");
+  f.addEventListener("input", function () { pEdit.dirty = true; });
   f.addEventListener("submit", function (e) { e.preventDefault(); var o = readForm(f, pEdit.obj); if (o.rearm) o.alertTriggered = null; delete o.rearm; Store.put("plans", o); pEdit = null; renderPlan(); toast("Сохранено"); });
   $("#pCancel").onclick = function () { pEdit = null; renderPlanEdit(); };
   var c = $("#pToCalc"); if (c) c.onclick = function () { var o = readForm(f, pEdit.obj); $("#t_ticker").value = o.ticker; var cc = readCalc(); cc.entry = o.entry; cc.stop = o.stop; cc.take = o.take; setCalc(cc); setDir(o.dir || "long", true); $("#t_setup").value = o.setup; onTradeChange(); location.hash = "#trade"; };
@@ -766,7 +832,7 @@ function initGuide() {
   ];
   var sec = function (title, body, open) { return '<details class="sec"' + (open ? " open" : "") + "><summary>" + esc(title) + '</summary><div class="body">' + body + "</div></details>"; };
   var html = '<div class="panel stack"><h2>Лучшие сетапы автора</h2><div class="cards">' + cards.map(function (c) { return '<div class="card">' + c.svg + "<h4>" + esc(c.t) + "</h4><p>" + esc(c.p) + "</p></div>"; }).join("") + "</div></div>";
-  html += sec("Как работает сканер", "<p>Каждый вечер после закрытия рынка США GitHub скачивает котировки ~1000 бумаг с капитализацией от 10 млрд $ и строит развороты (зигзаг по ATR) на месяце, неделе и дне. Кнопка «Сканировать» проверяет их по правилам ниже прямо на устройстве.</p><ul><li><b>Тренд</b> — по 4 точкам: три последних разворота плюс текущая цена.</li><li><b>Фильтр месяца</b>: против месячного тренда сделок нет.</li><li><b>В зоне</b> — цена в пределах ~0,75 ATR от уровня входа; <b>на подходе</b> — до 4 ATR: ставьте алерт.</li><li><b>Стоп</b> — за уровнем на 0,5 ATR, <b>тейк</b> — 80% пути до следующего уровня (или высота фигуры).</li><li><b>Триггер</b> — ложный пробой уровня, пинбар, поглощение или харами на последней закрытой свече.</li><li><b>RSI</b> — зелёные метки: выход из перепроданности или конвергенция (доп. подтверждение); серые: предупреждения (ждём выхода, старший ТФ в перекупленности).</li></ul><p>Сканер находит кандидатов. Решение о входе — по графику и чек-листу.</p>", true);
+  html += sec("Как работает сканер", "<p>Каждый вечер после закрытия рынка США GitHub скачивает котировки ~1000 бумаг с капитализацией от 10 млрд $ и строит развороты (зигзаг по ATR) и RSI на месяце, неделе, дне и 4 часах. H4 — свечи 9:30–13:30 и 13:30–16:00 по Нью-Йорку за прошедшую сессию: для входа внутри дня смотрите живой график в TradingView. Кнопка «Сканировать» проверяет их по правилам ниже прямо на устройстве.</p><ul><li><b>Тренд</b> — по 4 точкам: три последних разворота плюс текущая цена.</li><li><b>Фильтр месяца</b>: против месячного тренда сделок нет.</li><li><b>В зоне</b> — цена в пределах ~0,75 ATR от уровня входа; <b>на подходе</b> — до 4 ATR: ставьте алерт.</li><li><b>Стоп</b> — за уровнем на 0,5 ATR, <b>тейк</b> — 80% пути до следующего уровня (или высота фигуры).</li><li><b>Триггер</b> — ложный пробой уровня, пинбар, поглощение или харами на последней закрытой свече.</li><li><b>RSI</b> — зелёные метки: выход из перепроданности или конвергенция (доп. подтверждение); серые: предупреждения (ждём выхода, старший ТФ в перекупленности).</li></ul><p>Сканер находит кандидатов. Решение о входе — по графику и чек-листу.</p>", true);
   html += sec("Три кита и главное правило", "<ul><li><b>Тренд — твой друг.</b> Против тренда не торгуем.</li><li><b>Цена учитывает всё.</b></li><li><b>История повторяется.</b></li></ul><p><b>В импульсе не покупаем и не продаём. Ждём окончания коррекции.</b> MN → W → D.</p>");
   html += sec("Азбука: шесть «букв»", '<div class="tbl-wrap"><table><thead><tr><th>Импульсы</th><th>Коррекции</th></tr></thead><tbody><tr><td><b>Обновил</b> — тренд</td><td><b>Стандартная</b> — тренд продолжается</td></tr><tr><td><b>Вровень</b> — флет под вопросом</td><td><b>Вровень</b> — флет</td></tr><tr><td><b>Не обновил</b> — первый признак слома</td><td><b>= новый импульс</b> — слом</td></tr></tbody></table></div><p>Пройдено 61,8% старшего импульса — покупки не рассматриваем.</p>');
   html += sec("Триггеры входа", "<ul><li><b>Ложный пробой</b> (1 свеча, 2 свечи, харами, поглощение) — стоп за ложным пробоем.</li><li><b>Отскок</b> пинбаром или двумя свечами — только с подтверждением сломом на младшем ТФ.</li><li><b>Пробой</b>: с 1-го раза не торгуем, со 2-го — по закрытию свечи, с 3-го — любимая ТВХ.</li><li><b>Ретест</b>: уровни, пробитые с 3-го раза, и уровни слома ретестятся почти всегда.</li></ul>");
@@ -790,6 +856,31 @@ function initSettings() {
     Sync.pull().then(function () { $("#syncMsg").textContent = Sync.ok ? "Готово: журнал и watchlist синхронизируются." : "Не получилось — проверьте логин, имя репозитория и ключ."; });
   };
   $("#forgetToken").onclick = function () { Sync.cfg.token = ""; lsSet(LS_SYNC, Sync.cfg); c = Sync.cfg; $("#s_token").value = ""; Sync.status("warn", "Журнал: только на этом устройстве"); $("#syncMsg").textContent = "Ключ удалён с этого устройства."; };
+  var pairTimer = null;
+  var hidePair = function () { clearTimeout(pairTimer); $("#pairBox").innerHTML = ""; $("#showPair").textContent = "Показать QR-код и ссылку"; };
+  $("#showPair").onclick = function () {
+    if ($("#pairBox").innerHTML) { hidePair(); return; }
+    if (!Sync.ready()) { $("#pairBox").innerHTML = '<p class="note neg">Сначала подключите синхронизацию на этом устройстве (ключ слева), потом показывайте код другим.</p>'; return; }
+    var link = pairLink(), qr = "";
+    try { var q = window.qrcode(0, "L"); q.addData(link); q.make(); qr = q.createSvgTag({ cellSize: 4, margin: 3, scalable: true }); } catch (e) { qr = ""; }
+    $("#pairBox").innerHTML = (qr ? '<div class="qr">' + qr + "</div>" : "") +
+      '<p class="note">Наведите камеру телефона на код и откройте ссылку. На Android после этого добавьте приложение на главный экран — подключение сохранится. <b>В коде ваш ключ доступа к журналу: не показывайте его и не пересылайте посторонним.</b> Код скроется через 2 минуты.</p>' +
+      '<div class="row"><button class="btn" type="button" id="copyLink">Скопировать ссылку</button><button class="btn" type="button" id="copyCode">Скопировать код</button><button class="btn ghost" type="button" id="hidePair">Скрыть</button></div>';
+    $("#showPair").textContent = "Скрыть QR-код";
+    var copy = function (text, what) { var done = function () { toast(what + " скопирован" + (what === "Код" ? "" : "а")); }; try { navigator.clipboard.writeText(text).then(done, function () { window.prompt("Скопируйте:", text); }); } catch (e) { window.prompt("Скопируйте:", text); } };
+    $("#copyLink").onclick = function () { copy(link, "Ссылка"); };
+    $("#copyCode").onclick = function () { copy(pairCode(), "Код"); };
+    $("#hidePair").onclick = hidePair;
+    pairTimer = setTimeout(hidePair, 120000);
+  };
+  $("#pairConnect").onclick = function () {
+    var cfg = readPairCode($("#pairInput").value);
+    if (!cfg) { $("#pairMsg").textContent = "Код не распознан: он начинается с OSV1- — скопируйте его целиком."; return; }
+    Sync.cfg = cfg; lsSet(LS_SYNC, cfg); c = cfg; $("#pairInput").value = "";
+    $("#s_owner").value = cfg.owner; $("#s_repo").value = cfg.repo; $("#s_scan").value = cfg.scanRepo; $("#s_token").value = "••••••••";
+    $("#pairMsg").textContent = "Подключаюсь…";
+    Sync.pull().then(function () { $("#pairMsg").textContent = Sync.ok ? "Готово: это устройство синхронизируется с остальными." : "Не получилось — проверьте код или ключ на первом устройстве."; });
+  };
   $("#refreshData").onclick = function () { Sync.dispatch(Sync.cfg.scanRepo || "osipov-scanner", "build.yml").then(function () { $("#actMsg").textContent = "Запущено. Новые котировки появятся через 15–25 минут — обновите страницу."; }, function (e) { $("#actMsg").textContent = "Не запустилось: " + e.message; }); };
   $("#checkAlerts").onclick = function () { Sync.dispatch(Sync.cfg.repo || "osipov-journal", "alerts.yml").then(function () { $("#actMsg").textContent = "Проверка алертов запущена, займёт 1–2 минуты."; setTimeout(function () { Sync.pull(); }, 120000); }, function (e) { $("#actMsg").textContent = "Не запустилось: " + e.message; }); };
 }
@@ -801,9 +892,13 @@ function renderSettingsInfo() {
 }
 
 /* ======================= запуск ======================= */
-function renderAll() { renderJournal(); renderPlan(); }
+function renderAll(soft) { renderJournal(soft); renderPlan(soft); }
 initScan(); initTrade(); initJournal(); initPlan(); initGuide(); initSettings();
+if (!Store.st.prefs) { Store.st.prefs = prefsLocal(); Store.st.prefs.u = 1; lsSet(LS_STATE, Store.st); } // любые настройки с другого устройства новее
 route(); renderAll(); calc(); renderSettingsInfo();
+if (PAIRED) setTimeout(function () { toast(PAIRED); }, 300);
+$("#syncStatus").style.cursor = "pointer"; $("#syncStatus").title = "Настройки синхронизации";
+$("#syncStatus").addEventListener("click", function () { location.hash = "#settings"; });
 $("#chClose").onclick = closeChart;
 $("#chartModal").addEventListener("click", function (e) { if (e.target.id === "chartModal") closeChart(); });
 document.addEventListener("keydown", function (e) { if (e.key === "Escape" && $("#chartModal").classList.contains("on")) closeChart(); });
@@ -811,6 +906,8 @@ $$("[data-ctf]").forEach(function (b) { b.onclick = function () { CH.tf = b.data
 loadData();
 Sync.pull();
 document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") Sync.pull(); });
-setInterval(function () { if (document.visibilityState === "visible" && !Sync.busy) Sync.pull(); }, 180000);
+window.addEventListener("focus", function () { if (!Sync.busy) Sync.pull(); });
+window.addEventListener("online", function () { Sync.pull(); });
+setInterval(function () { if (document.visibilityState === "visible" && !Sync.busy) Sync.pull(); }, 60000);
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(function () { /* без офлайна */ });
 })();
