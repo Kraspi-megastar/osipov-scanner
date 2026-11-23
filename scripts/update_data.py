@@ -4,7 +4,8 @@
 1. Список бумаг: все акции NASDAQ/NYSE/AMEX с капитализацией от MIN_CAP (по умолчанию 10 млрд $).
 2. Котировки (yfinance): месяц (до 25 лет), неделя (10 лет), день (2 года), 4 часа (год; собираются из часовых свечей
    по сессии США: 9:30–13:30 и 13:30–16:00 по Нью-Йорку, как в TradingView).
-3. Для каждого таймфрейма: развороты (зигзаг по ATR), ATR, RSI(14), последние две свечи и свечные модели.
+3. Для каждого таймфрейма: развороты (зигзаг по ATR), ATR, RSI(14), последние две свечи и свечные модели,
+   прайс экшен (характер свечи, волны, доля бычьих тел), скользящие 50/100/200.
 4. Даты ближайших отчётов.
 Результат:
   <out>/universe.json  — компактные структуры для сканера (весь рынок одним файлом)
@@ -217,32 +218,146 @@ def zigzag(o, h, l, c, k):
     return out[-KEEP_PIVOTS:], float(A[-1])
 
 
-def candles(o, h, l, c):
-    """Свечные модели на последней закрытой свече."""
+def candles(o, h, l, c, A=None, i=None):
+    """Свечные модели (урок «Прайс экшен») на свече i (по умолчанию — последней закрытой).
+    Код: имя + знак: «+» — бычья модель, «-» — медвежья. Нейтральные (доджи, волчок) — без знака.
+    Названия зависят от контекста: та же форма — молот после падения и повешенный после роста."""
+    n = len(c)
+    i = n - 1 if i is None else i
     res = []
-    if len(c) < 2:
+    if i < 1:
         return res
-    O, H, L, C = o[-1], h[-1], l[-1], c[-1]
-    po, pc = o[-2], c[-2]
+    if A is None or not (A > 0):
+        A = float(np.mean(h[max(0, i - 14):i + 1] - l[max(0, i - 14):i + 1])) or 1.0
+    O, H, L, C = o[i], h[i], l[i], c[i]
+    po, ph, pl, pc = o[i - 1], h[i - 1], l[i - 1], c[i - 1]
     rng = H - L
     body = abs(C - O)
+    lw = min(O, C) - L
+    uw = H - max(O, C)
+
+    def prior(k):  # движение за 5 свечей до начала модели из k свечей, в ATR
+        j = i - k
+        return (c[j] - c[max(0, j - 5)]) / A if j >= 1 else 0.0
+
     if rng > 0:
-        lw = min(O, C) - L
-        uw = H - max(O, C)
         if lw >= 2 * body and lw >= 0.6 * rng and (C - L) >= 0.6 * rng:
             res.append("pin+")
         if uw >= 2 * body and uw >= 0.6 * rng and (H - C) >= 0.6 * rng:
             res.append("pin-")
-    pb = abs(pc - po)
-    if pc < po and C > O and C >= po and O <= pc and body > pb:
+        if body <= 0.1 * rng and rng >= 0.3 * A and min(lw, uw) >= 0.3 * rng:
+            res.append("doji")  # тени примерно равны; доджи-стрекоза и надгробие идут как пинбары
+        elif body <= 0.3 * rng and lw >= body and uw >= body and min(lw, uw) >= 0.25 * rng:
+            res.append("top")  # волчок
+        if body >= 0.85 * rng and rng >= 0.8 * A:
+            res.append("mar+" if C > O else "mar-")  # марибозу
+        inside = max(O, C) <= ph and min(O, C) >= pl
+        if body > 0 and lw >= 2 * body and uw <= 0.1 * rng and inside:
+            if prior(1) < -0.5:
+                res.append("ham+")     # молот
+            elif prior(1) > 0.5:
+                res.append("hang-")    # повешенный
+        if body > 0 and uw >= 2 * body and lw <= 0.1 * rng:
+            if prior(1) < -0.5:
+                res.append("ihm+")     # перевёрнутый молот
+            elif prior(1) > 0.5:
+                res.append("star-")    # падающая звезда
+    pbody = abs(pc - po)
+    if pc < po and C > O and C >= po and O <= pc and body > pbody:
         res.append("eng+")
-    if pc > po and C < O and C <= po and O >= pc and body > pb:
+    if pc > po and C < O and C <= po and O >= pc and body > pbody:
         res.append("eng-")
-    if pc < po and C > O and max(O, C) <= po and min(O, C) >= pc and body < 0.6 * pb:
+    if pc < po and C > O and max(O, C) <= po and min(O, C) >= pc and body < 0.6 * pbody:
         res.append("har+")
-    if pc > po and C < O and max(O, C) <= pc and min(O, C) >= po and body < 0.6 * pb:
+    if pc > po and C < O and max(O, C) <= pc and min(O, C) >= po and body < 0.6 * pbody:
         res.append("har-")
+    # пинцет: первая свеча по тренду, вторая против, экстремумы равны
+    if prior(2) < -0.5 and pc < po and C > O and abs(L - pl) <= 0.1 * A:
+        res.append("twz+")
+    if prior(2) > 0.5 and pc > po and C < O and abs(H - ph) <= 0.1 * A:
+        res.append("twz-")
+    if i >= 2:
+        o3, c3 = o[i - 2], c[i - 2]
+        b3 = abs(c3 - o3)
+        mid3 = (o3 + c3) / 2
+        small = pbody <= 0.3 * b3
+        # утренняя / вечерняя звезда: длинная — очень маленькая — большая противоположная за середину первой
+        if b3 >= 0.6 * A and small and c3 < o3 and C > O and C >= mid3 and body >= 0.5 * b3:
+            res.append("ms+")
+        if b3 >= 0.6 * A and small and c3 > o3 and C < O and C <= mid3 and body >= 0.5 * b3:
+            res.append("es-")
+        # три внутри вверх / вниз: харами и закрытие за открытием первой свечи
+        if c3 < o3 and pc > po and max(po, pc) <= o3 and min(po, pc) >= c3 and C > O and C > o3:
+            res.append("3in+")
+        if c3 > o3 and pc < po and max(po, pc) <= c3 and min(po, pc) >= o3 and C < O and C < o3:
+            res.append("3in-")
+        # три белых солдата / три чёрных вороны
+        bodies = [abs(c[k] - o[k]) for k in (i - 2, i - 1, i)]
+        if all(c[k] > o[k] for k in (i - 2, i - 1, i)) and c[i - 2] < c[i - 1] < C and min(bodies) >= 0.5 * A \
+                and o3 <= po <= c3 and po <= O <= pc:
+            res.append("3ws+")
+        if all(c[k] < o[k] for k in (i - 2, i - 1, i)) and c[i - 2] > c[i - 1] > C and min(bodies) >= 0.5 * A \
+                and c3 <= po <= o3 and pc <= O <= po:
+            res.append("3bc-")
+    # одна форма — разный смысл по контексту: после роста «молот» — это повешенный (медвежий), а не бычий пинбар;
+    # после падения «падающая звезда» — это перевёрнутый молот (бычий), а не медвежий пинбар
+    if "hang-" in res and "pin+" in res:
+        res.remove("pin+")
+    if "ihm+" in res and "pin-" in res:
+        res.remove("pin-")
     return res
+
+
+def candle_character(o, h, l, c, A):
+    """Чтение последней свечи по телу и теням: сила, нерешительность, нет интереса, волатильность."""
+    O, H, L, C = o[-1], h[-1], l[-1], c[-1]
+    rng = H - L
+    if not (rng > 0 and A > 0):
+        return None
+    body = abs(C - O)
+    big_body = body >= 0.6 * A
+    long_sh = (rng - body) >= 0.6 * rng
+    if big_body and (rng - body) <= 0.3 * rng:
+        return "strong+" if C > O else "strong-"
+    if big_body and (rng - body) >= 0.4 * rng:
+        return "vol"
+    if body <= 0.3 * rng and long_sh and rng >= 0.6 * A:
+        return "indec"
+    if body <= 0.25 * A and rng <= 0.5 * A:
+        return "quiet"
+    return None
+
+
+def waves(o, c, p, A):
+    """Последние волны между разворотами: [направление, длина/ATR, свечей, средн. тело/ATR] — для оценки силы тренда."""
+    out = []
+    for k in range(max(1, len(p) - 5), len(p)):
+        i1, i2 = p[k - 1][0], p[k][0]
+        if i2 <= i1:
+            continue
+        d = 1 if p[k][2] > p[k - 1][2] else -1
+        seg = np.abs(c[i1 + 1:i2 + 1] - o[i1 + 1:i2 + 1])
+        out.append([d, round(abs(p[k][2] - p[k - 1][2]) / A, 2), int(i2 - i1), round(float(seg.mean()) / A, 2)])
+    return out
+
+
+def bull_share(o, c, n=10):
+    """Доля бычьих тел за последние n свечей: >0.6 — контроль у быков, <0.4 — у медведей."""
+    b = c[-n:] - o[-n:]
+    tot = float(np.abs(b).sum())
+    return round(float(b[b > 0].sum()) / tot, 2) if tot > 0 else None
+
+
+def moving(c):
+    """Последние значения скользящих: SMA 50/100/200 и EMA 200."""
+    s = pd.Series(c)
+    out = {}
+    for k in (50, 100, 200):
+        if len(c) >= k:
+            out[f"s{k}"] = rnd(float(s.rolling(k).mean().iloc[-1]))
+    if len(c) >= 200:
+        out["e200"] = rnd(float(s.ewm(span=200, adjust=False).mean().iloc[-1]))
+    return out
 
 
 def tf_struct(df, key, limit):
@@ -256,9 +371,16 @@ def tf_struct(df, key, limit):
     st = {"a": rnd(a), "n": len(c), "p": p, "r": [r1(x) for x in R[-5:]],
           "lb": [rnd(o[-1]), rnd(h[-1]), rnd(l[-1]), rnd(c[-1])],
           "pb": [rnd(o[-2]), rnd(h[-2]), rnd(l[-2]), rnd(c[-2])],
-          "cp": candles(o, h, l, c), "d": t[-1]}
+          "cp": candles(o, h, l, c, a), "d": t[-1],
+          "ch": candle_character(o, h, l, c, a), "wv": waves(o, c, p, a), "bb": bull_share(o, c), "ma": moving(c)}
     chart = [[t[i], rnd(o[i]), rnd(h[i]), rnd(l[i]), rnd(c[i])] for i in range(len(c))]
-    return st, chart
+    # отметки свечных моделей для графика: последние 150 свечей, только направленные модели
+    marks = []
+    for i in range(max(2, len(c) - 150), len(c)):
+        cs = [x for x in candles(o, h, l, c, a, i) if x[-1] in "+-"]
+        if cs:
+            marks.append([t[i]] + cs)
+    return st, (chart, marks)
 
 
 # ---------------------------------------------------------------- отчёты
@@ -312,7 +434,7 @@ def build(out, frames=None, universe=None, earnings=None):
     for u in uni:
         s = u["s"]
         rec = dict(u)
-        chart = {"s": s}
+        chart = {"s": s, "pm": {}}  # pm — отметки свечных моделей по таймфреймам
         ok = True
         for key in ("M", "W", "D"):
             df = frames[key].get(s)
@@ -324,7 +446,7 @@ def build(out, frames=None, universe=None, earnings=None):
                 ok = False
                 break
             rec[key] = st
-            chart[key] = ch
+            chart[key], chart["pm"][key] = ch
         if not ok:
             failed.append(s)
             continue
@@ -333,7 +455,7 @@ def build(out, frames=None, universe=None, earnings=None):
             st, ch = tf_struct(h4, "H4", limits["H4"])
             if st is not None:
                 rec["H4"] = st
-                chart["H4"] = ch
+                chart["H4"], chart["pm"]["H4"] = ch
                 h4n += 1
         rec["px"] = rec["D"]["lb"][3]
         if s in earnings:

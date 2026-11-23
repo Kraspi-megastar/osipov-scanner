@@ -106,14 +106,88 @@
   function trigger(v, level) {
     var res = [];
     var L = v.last, A = v.a;
-    var cp = v.cp.map(function (c) { return v.sgn > 0 ? c : c.replace("+", "#").replace("-", "+").replace("#", "-"); });
     if (isFinite(level) && L.l < level - 0.05 * A && L.c > level) res.push("ложный пробой одной свечой");
     if (isFinite(level) && v.prev.l < level - 0.05 * A && v.prev.c < level && L.c > level && L.c > L.o) res.push("ложный пробой двумя свечами");
-    if (cp.indexOf("pin+") >= 0) res.push("пинбар");
-    if (cp.indexOf("eng+") >= 0) res.push("поглощение");
-    if (cp.indexOf("har+") >= 0) res.push("харами");
-    return res;
+    return res.concat(candlesFor(v.cp, v.sgn));
   }
+  // ---------- прайс экшен: свечные модели (урок «Прайс экшен»)
+  // код из данных: имя + «+» (бычья) / «-» (медвежья); доджи и волчок — нейтральные
+  var CANDLES = {
+    "pin+": "пинбар", "pin-": "пинбар", "eng+": "поглощение", "eng-": "поглощение", "har+": "харами", "har-": "харами",
+    "ham+": "молот", "hang-": "повешенный", "ihm+": "перевёрнутый молот", "star-": "падающая звезда",
+    "ms+": "утренняя звезда", "es-": "вечерняя звезда", "twz+": "пинцет", "twz-": "пинцет",
+    "3in+": "три внутри вверх", "3in-": "три внутри вниз", "mar+": "бычий марибозу", "mar-": "медвежий марибозу",
+    "3ws+": "три белых солдата", "3bc-": "три чёрных вороны", "doji": "доджи", "top": "волчок"
+  };
+  // модели в нашу сторону (для шорта — медвежьи)
+  function candlesFor(cp, sgn) {
+    return (cp || []).filter(function (c) { var z = c.slice(-1); return (z === "+" && sgn > 0) || (z === "-" && sgn < 0); })
+      .map(function (c) { return CANDLES[c] || c; });
+  }
+  function candlesAgainst(cp, sgn) { return candlesFor(cp, -sgn); }
+  function candlesNeutral(cp) { return (cp || []).filter(function (c) { return c === "doji" || c === "top"; }).map(function (c) { return CANDLES[c]; }); }
+
+  // Сила тренда по волнам: признаки затухания стороны (урок «Прайс экшен»).
+  // wv: [направление, длина/ATR, свечей, средн. тело/ATR]; side: +1 — быки (импульсы вверх), −1 — медведи.
+  function exhaustion(wv, side) {
+    var imp = (wv || []).filter(function (w) { return w[0] === side; }).slice(-2);
+    var cor = (wv || []).filter(function (w) { return w[0] === -side; }).slice(-2);
+    var f = [];
+    if (imp.length === 2) {
+      var a = imp[0], b = imp[1];
+      if (b[1] < 0.85 * a[1]) f.push("импульсы короче");
+      if (b[1] / b[2] < 0.8 * (a[1] / a[2])) f.push("импульсы положе");
+      if (b[3] < 0.8 * a[3]) f.push("свечи импульсов мельче");
+    }
+    if (cor.length === 2) {
+      var c = cor[0], d = cor[1];
+      if (d[1] / d[2] > 1.25 * (c[1] / c[2])) f.push("коррекции круче");
+      if (d[3] > 1.25 * c[3]) f.push("свечи коррекций крупнее");
+    }
+    return f;
+  }
+  // Кто контролирует рынок и затухает ли тренд — с точки зрения нашей стороны (sgn)
+  function paInfo(tf, sgn) {
+    if (!tf) return null;
+    var own = exhaustion(tf.wv, sgn), opp = exhaustion(tf.wv, -sgn);
+    var bb = tf.bb == null ? NaN : (sgn > 0 ? tf.bb : 1 - tf.bb);
+    var ch = tf.ch || null;
+    if (ch && sgn < 0) ch = ch === "strong+" ? "strong-" : ch === "strong-" ? "strong+" : ch;
+    return { own: own, opp: opp, ctrl: !isFinite(bb) ? "" : bb >= 0.6 ? "our" : bb <= 0.4 ? "their" : "balance", bb: bb, ch: ch,
+      fav: candlesFor(tf.cp, sgn), against: candlesAgainst(tf.cp, sgn), neutral: candlesNeutral(tf.cp) };
+  }
+  var CH_TEXT = { "strong+": "свеча силы в нашу сторону", "strong-": "свеча силы против нас", vol: "большое тело и длинные тени: высокая волатильность",
+    indec: "маленькое тело, большие тени: нерешительность", quiet: "маленькая свеча: нет интереса" };
+  function paTags(t, tf, sgn) {
+    var ok = [], warn = [], x = paInfo(t[tf], sgn);
+    if (!x) return { ok: ok, warn: warn };
+    var us = sgn > 0 ? "покупатели" : "продавцы", them = sgn > 0 ? "продавцы" : "покупатели";
+    if (x.opp.length >= 2) ok.push(them + " выдыхаются");
+    if (x.own.length >= 3) warn.push(us + " слабеют: " + x.own.join(", "));
+    if (x.ctrl === "our") ok.push("контроль у " + (sgn > 0 ? "быков" : "медведей"));
+    else if (x.ctrl === "their") warn.push("контроль у " + (sgn > 0 ? "медведей" : "быков"));
+    if (x.ch === "strong-") warn.push("свеча силы против нас");
+    if (x.neutral.length) warn.push(x.neutral.join(", ") + ": неопределённость — не сигнал");
+    if (x.against.length) warn.push("против нас: " + x.against.join(", "));
+    return { ok: ok, warn: warn, info: x };
+  }
+  // Структурные факторы слияния: каждый ≈ +15–20% к вероятности, 100% не бывает
+  function confluence(t, tf, sgn, h, rsi, pa) {
+    var tfd = t[tf], lvl = h.lvl, A = tfd.a, ma = tfd.ma || {};
+    var maNear = Object.keys(ma).filter(function (k) { return isFinite(ma[k]) && isFinite(lvl) && Math.abs(ma[k] - lvl) <= 0.6 * A; })
+      .map(function (k) { return k === "e200" ? "EMA 200" : "SMA " + k.slice(1); });
+    var f = [
+      { k: "level", t: "Ключевой уровень: цена в зоне", ok: h.zs.z === "in" },
+      { k: "candle", t: "Свеча-сигнал на уровне", ok: h.trg.length > 0, d: h.trg.join(", ") },
+      { k: "trend", t: "Тренд в нашу сторону (MN или W)", ok: trend(view(t.M, sgn)) === "up" || trend(view(t.W, sgn)) === "up" },
+      { k: "space", t: "Свободное пространство до цели (R:R ≥ 3)", ok: h.pl.rr >= 3 },
+      { k: "ma", t: "Скользящие рядом с уровнем", ok: maNear.length > 0, d: maNear.join(", ") },
+      { k: "rsi", t: "Подтверждение RSI", ok: rsi.ok.length > 0, d: rsi.ok.join(", ") },
+      { k: "pa", t: "Прайс экшен за нас (контроль или противник выдыхается)", ok: pa.ok.length > 0, d: pa.ok.join(", ") }
+    ];
+    return { n: f.filter(function (x) { return x.ok; }).length, of: f.length, f: f };
+  }
+
   function plan(v, entry, stop, take, k80) {
     var t80 = entry + (take - entry) * (k80 || 0.8);
     var rr = (t80 - entry) / (entry - stop);
@@ -307,7 +381,7 @@
 
   /* cfg: {tf:'H4'|'D'|'W', dirs:['long','short'], setups:{key:true}, tol:0.75, stopAtr:0.5,
            mnFilter:true, wFilter:true, earnDays:14, earnExclude:true, minRR:2, zones:['in','near'],
-           minCap:10, sector:'', today:'YYYY-MM-DD'} */
+           minCap:10, sector:'', today:'YYYY-MM-DD', minCf:0} */
   function scanTicker(t, cfg) {
     var res = [];
     var dirs = cfg.dirs || ["long"];
@@ -330,11 +404,13 @@
           if (cfg.minRR && !(h.pl.rr >= cfg.minRR)) return;
           var ed = daysTo(t.e, cfg.today);
           if (cfg.earnExclude && isFinite(ed) && ed >= 0 && ed <= cfg.earnDays) return;
+          var rs = rsiTags(t, cfg.tf, sgn), pa = paTags(t, cfg.tf, sgn), cf = confluence(t, cfg.tf, sgn, h, rs, pa);
+          if (cfg.minCf && cf.n < cfg.minCf) return;
           res.push({
             s: t.s, n: t.n, sec: t.sec, mc: t.mc, px: t.px, dir: dir, tf: cfg.tf, k: h.k,
             name: (dir === "long" ? SETUPS : SETUPS_SHORT)[h.k], why: h.why, zone: h.zs.z, dAtr: h.zs.d,
             entry: h.pl.entry, stop: h.pl.stop, take: h.pl.take, level: h.lvl, takeLevel: h.pl.level, rr: h.pl.rr,
-            trg: h.trg, mT: mT, wT: wT, e: t.e || null, eDays: ed, atr: t[cfg.tf].a, rsi: rsiTags(t, cfg.tf, sgn)
+            trg: h.trg, mT: mT, wT: wT, e: t.e || null, eDays: ed, atr: t[cfg.tf].a, rsi: rs, pa: { ok: pa.ok, warn: pa.warn }, cf: cf
           });
         });
       });
@@ -351,11 +427,11 @@
     });
     var zr = { in: 0, near: 1, far: 2 };
     out.sort(function (a, b) {
-      return (zr[a.zone] - zr[b.zone]) || ((b.trg.length > 0) - (a.trg.length > 0)) || ((b.rsi.ok.length > 0) - (a.rsi.ok.length > 0)) || ((b.rr || 0) - (a.rr || 0));
+      return (zr[a.zone] - zr[b.zone]) || (b.cf.n - a.cf.n) || ((b.trg.length > 0) - (a.trg.length > 0)) || ((b.rr || 0) - (a.rr || 0));
     });
     return out;
   }
 
-  var api = { scan: scan, scanTicker: scanTicker, trend: trend, view: view, phase: phase, rsiInfo: rsiInfo, rsiTags: rsiTags, SETUPS: SETUPS, SETUPS_SHORT: SETUPS_SHORT };
+  var api = { scan: scan, scanTicker: scanTicker, trend: trend, view: view, phase: phase, rsiInfo: rsiInfo, rsiTags: rsiTags, paInfo: paInfo, paTags: paTags, candlesFor: candlesFor, CANDLES: CANDLES, CH_TEXT: CH_TEXT, SETUPS: SETUPS, SETUPS_SHORT: SETUPS_SHORT };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.OsipovScanner = api;
 })(this);

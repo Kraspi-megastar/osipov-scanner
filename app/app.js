@@ -15,7 +15,9 @@ var JSETUP = {
 var SETUPS = Object.keys(JSETUP).map(function (k) { return JSETUP[k]; }).concat(["Отскок от сильного уровня", "Голова и плечи", "Флаг / вымпел", "Другое"]);
 var TRIGGERS = ["Ложный пробой одной свечой", "Ложный пробой двумя свечами", "Харами", "Поглощение",
   "Отскок: пинбар (нужно подтверждение младшим ТФ)", "Отскок: две свечи (нужно подтверждение младшим ТФ)",
-  "Пробой: закрытие свечи над уровнем", "Ретест пробитого уровня", "Слом структуры на младшем ТФ"];
+  "Пробой: закрытие свечи над уровнем", "Ретест пробитого уровня", "Слом структуры на младшем ТФ",
+  "Молот / перевёрнутый молот (лучше с подтверждающей свечой)", "Утренняя / вечерняя звезда", "Пинцет", "Три внутри вверх / вниз",
+  "Марибозу или три солдата (продолжение)"];
 var CHECKS = [
   { g: "MN — тренд и зона", items: [
     { id: "c1", t: "Тренд по 4 точкам определён, сделка в его сторону (во флете — от границы к границе)", crit: 1 },
@@ -28,6 +30,7 @@ var CHECKS = [
     { id: "c6", t: "Есть паттерн: слом → ретест, 1-2-3, ГиП, двойное дно, пробой с 3-го раза" },
     { id: "c7", t: "Триггер есть и свеча закрылась", crit: 1 },
     { id: "c8", t: "Для отскока пинбаром или двумя свечами есть слом на младшем ТФ" },
+    { id: "c16", t: "Прайс экшен: свеча-сигнал на уровне по контексту, своя сторона не слабеет; факторов слияния 3 и больше (уровень, свеча, тренд, запас хода, скользящие, RSI)" },
     { id: "c15", t: "Доп. подтверждение RSI по тренду: выход из перепроданности через 30 (шорт — из перекупленности через 70) или конвергенция; можно смотреть на H4" }] },
   { g: "Фильтры и риск", items: [
     { id: "c9", t: "Не середина флета", crit: 1 },
@@ -62,6 +65,27 @@ function kv(k, v, cls) { return '<div class="kv ' + (cls || "") + '"><div class=
 function rsiHtml(r) {
   if (!r) return "";
   return r.ok.map(function (x) { return '<span class="tag up">' + esc(x) + "</span>"; }).concat(r.warn.map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; })).join(" ");
+}
+function paHtml(r) {
+  if (!r) return "";
+  return r.ok.map(function (x) { return '<span class="tag up">' + esc(x) + "</span>"; }).concat(r.warn.map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; })).join(" ");
+}
+function cfHtml(cf) {
+  if (!cf) return "";
+  return '<div class="small"><b>Факторы слияния: ' + cf.n + " из " + cf.of + '</b> <span class="muted">(каждый ≈ +15–20% к вероятности; 100% не бывает — стоп обязателен)</span></div><ul class="cf">' +
+    cf.f.map(function (x) { return '<li class="' + (x.ok ? "pos" : "muted") + '">' + (x.ok ? "✓ " : "· ") + esc(x.t) + (x.ok && x.d ? ": " + esc(x.d) : "") + "</li>"; }).join("") + "</ul>";
+}
+// Прайс экшен по таймфреймам для панели бумаги
+function paBlock(t) {
+  var rows = ["M", "W", "D", "H4"].filter(function (k) { return t[k] && t[k].wv; }).map(function (k) {
+    var x = SC.paInfo(t[k], 1), name = k === "M" ? "MN" : k;
+    var ctrl = x.ctrl === "our" ? '<span class="tag up">быки</span>' : x.ctrl === "their" ? '<span class="tag down">медведи</span>' : x.ctrl ? '<span class="tag">равновесие</span>' : "";
+    var bulls = x.own.length ? "быки слабеют (" + x.own.join(", ") + ")" : "", bears = x.opp.length ? "медведи слабеют (" + x.opp.join(", ") + ")" : "";
+    var cp = (t[k].cp || []).map(function (c) { return (SC.CANDLES[c] || c) + (c.slice(-1) === "+" ? " ↑" : c.slice(-1) === "-" ? " ↓" : ""); });
+    return '<div class="small"><b>' + name + "</b> " + ctrl + (x.ch && SC.CH_TEXT[x.ch] ? ' · <span class="muted">' + esc(x.ch === "strong+" ? "свеча силы быков" : x.ch === "strong-" ? "свеча силы медведей" : SC.CH_TEXT[x.ch]) + "</span>" : "") +
+      (cp.length ? " · свеча: <b>" + esc(cp.join(", ")) + "</b>" : "") + ([bulls, bears].filter(Boolean).length ? '<div class="note">' + esc([bulls, bears].filter(Boolean).join("; ")) + "</div>" : "") + "</div>";
+  });
+  return rows.length ? '<div class="stack" style="gap:4px"><h3>Прайс экшен</h3>' + rows.join("") + "</div>" : "";
 }
 function rsiVal(t, tf) { var r = t && t[tf] && t[tf].r; var x = r && r[r.length - 1]; return x == null ? NaN : x; }
 function rsiZone(x) { return !isFinite(x) ? "" : x > 70 ? " (перекупл.)" : x < 30 ? " (перепрод.)" : ""; }
@@ -237,7 +261,7 @@ function loadData() {
 
 /* ======================= сканер ======================= */
 var SCFG = Object.assign({ tf: "D", dir: "long", setups: { breakK: 1, breakN: 1, prevHigh: 1, line: 1, flatLow: 1, flatRetest: 1, third: 1, dbl: 1 },
-  zIn: true, zNear: true, mn: true, w: true, earn: true, trg: false, rsi: false, rr: "2", cap: 10, sector: "" }, lsGet(LS_SCAN, {}));
+  zIn: true, zNear: true, mn: true, w: true, earn: true, trg: false, rsi: false, cf: "0", rr: "2", cap: 10, sector: "" }, lsGet(LS_SCAN, {}));
 var LAST = [];
 function initScan() {
   var box = $("#oSetups"), html = "";
@@ -258,7 +282,7 @@ function initScan() {
 function scanInputs() {
   $$("[data-setup]").forEach(function (i) { i.checked = !!SCFG.setups[i.dataset.setup]; });
   $("#oZoneIn").checked = SCFG.zIn; $("#oZoneNear").checked = SCFG.zNear; $("#oMn").checked = SCFG.mn; $("#oW").checked = SCFG.w;
-  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRsi").checked = !!SCFG.rsi; $("#oRR").value = SCFG.rr; $("#oCap").value = SCFG.cap;
+  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRsi").checked = !!SCFG.rsi; $("#oRR").value = SCFG.rr; $("#oCf").value = SCFG.cf || "0"; $("#oCap").value = SCFG.cap;
   if (SCFG.sector != null && $("#oSector").querySelector('option[value="' + SCFG.sector.replace(/"/g, "") + '"]')) $("#oSector").value = SCFG.sector;
   segSync();
 }
@@ -269,7 +293,7 @@ function segSync() {
 function readScanCfg() {
   $$("[data-setup]").forEach(function (i) { SCFG.setups[i.dataset.setup] = i.checked ? 1 : 0; });
   SCFG.zIn = $("#oZoneIn").checked; SCFG.zNear = $("#oZoneNear").checked; SCFG.mn = $("#oMn").checked; SCFG.w = $("#oW").checked;
-  SCFG.earn = $("#oEarn").checked; SCFG.trg = $("#oTrg").checked; SCFG.rsi = $("#oRsi").checked; SCFG.rr = $("#oRR").value; SCFG.cap = num($("#oCap").value) || 0; SCFG.sector = $("#oSector").value;
+  SCFG.earn = $("#oEarn").checked; SCFG.trg = $("#oTrg").checked; SCFG.rsi = $("#oRsi").checked; SCFG.rr = $("#oRR").value; SCFG.cf = $("#oCf").value; SCFG.cap = num($("#oCap").value) || 0; SCFG.sector = $("#oSector").value;
 }
 function saveScanCfg() { lsSet(LS_SCAN, SCFG); savePrefs(); }
 function engineCfg(all) {
@@ -277,7 +301,7 @@ function engineCfg(all) {
   var zones = all ? ["in", "near"] : [].concat(SCFG.zIn ? ["in"] : [], SCFG.zNear ? ["near"] : []);
   return { tf: SCFG.tf, dirs: SCFG.dir === "both" ? ["long", "short"] : [SCFG.dir], setups: setups, tol: 0.75, stopAtr: 0.5,
     mnFilter: all ? false : SCFG.mn, wFilter: all ? false : SCFG.w, earnDays: 14, earnExclude: all ? false : SCFG.earn,
-    minRR: all ? 0 : num(SCFG.rr) || 0, zones: zones, minCap: all ? 0 : SCFG.cap, sector: all ? "" : SCFG.sector, today: today() };
+    minRR: all ? 0 : num(SCFG.rr) || 0, zones: zones, minCap: all ? 0 : SCFG.cap, sector: all ? "" : SCFG.sector, today: today(), minCf: all ? 0 : num(SCFG.cf) || 0 };
 }
 function runScan() {
   if (!DATA.uni) return;
@@ -304,13 +328,14 @@ function renderHits() {
   el.innerHTML = LAST.slice(0, 300).map(function (h, i) {
     var zone = h.zone === "in" ? '<span class="tag up">в зоне</span>' : '<span class="tag acc">до зоны ' + fmt(Math.abs(h.dAtr), 1) + " ATR</span>";
     var trg = (h.trg || []).map(function (x) { return '<span class="tag warn">' + esc(x) + "</span>"; }).join(" ");
-    var rs = rsiHtml(h.rsi);
+    var rs = rsiHtml(h.rsi) + (h.pa ? " " + paHtml(h.pa) : "");
+    var cfb = h.cf ? '<span class="tag ' + (h.cf.n >= 4 ? "up" : h.cf.n >= 3 ? "acc" : "") + '" title="Структурные факторы слияния">слияние ' + h.cf.n + "/" + h.cf.of + "</span>" : "";
     var earn = isFinite(h.eDays) && h.eDays >= 0 ? '<span class="tag' + (h.eDays <= 14 ? " down" : "") + '">отчёт ' + (h.eDays <= 30 ? "через " + h.eDays + " дн." : esc(h.e)) + "</span>" : "";
     return '<button type="button" class="hit ' + h.dir + '" data-hit="' + i + '" data-s="' + esc(h.s) + '">' +
       '<div class="row between"><span class="tk">' + esc(h.s) + '</span><span class="tag ' + (h.dir === "long" ? "up" : "down") + '">' + (h.dir === "long" ? "покупка" : "шорт") + " · " + esc(h.tf) + "</span></div>" +
       '<div class="nm">' + esc(h.n || "") + (h.sec ? " · " + esc(h.sec) : "") + "</div>" +
       '<div class="small"><b>' + esc(h.name) + "</b>" + (h.more.length ? ' <span class="muted">+ ' + esc(h.more.join(", ")) + "</span>" : "") + "</div>" +
-      '<div class="row">' + zone + " " + trg + " " + earn + "</div>" + (rs ? '<div class="row">' + rs + "</div>" : "") +
+      '<div class="row">' + zone + " " + cfb + " " + trg + " " + earn + "</div>" + (rs.trim() ? '<div class="row">' + rs + "</div>" : "") +
       '<div class="nums"><div><span>Вход</span>' + px(h.entry) + "</div><div><span>Стоп</span>" + px(h.stop) + "</div><div><span>Тейк</span>" + px(h.take) + "</div><div><span>R:R</span>" + (isFinite(h.rr) ? "1:" + fmt(h.rr, 1) : "—") + "</div></div>" +
       '<div class="row">' + trendTag(h.mT, "MN") + " " + trendTag(h.wT, "W") + "</div></button>";
   }).join("") + (LAST.length > 300 ? '<div class="note">Показаны первые 300. Сузьте фильтры.</div>' : "");
@@ -349,6 +374,17 @@ function drawChart() {
   var rsiS = chart.addLineSeries({ priceScaleId: "rsi", color: css("--warn"), lineWidth: 1, lastValueVisible: true, priceLineVisible: false, title: "RSI" });
   chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.78, bottom: 0.02 }, borderColor: css("--line") });
   rsiS.setData(rows.map(function (r, i) { return isFinite(rv[i]) ? { time: r[0], value: +rv[i].toFixed(1) } : null; }).filter(Boolean));
+  // отметки свечных моделей (урок «Прайс экшен»): ↑ бычьи под свечой, ↓ медвежьи над свечой
+  var pm = CH.data.pm && CH.data.pm[CH.tf];
+  if (pm && $("#chMarks") && $("#chMarks").checked) {
+    var SHORT = { pin: "Пин", eng: "Погл", har: "Хар", ham: "Молот", hang: "Повеш", ihm: "П.молот", star: "П.звезда", ms: "У.звезда", es: "В.звезда", twz: "Пинцет", "3in": "3 внутри", mar: "Марибозу", "3ws": "3 солдата", "3bc": "3 вороны" };
+    ser.setMarkers(pm.map(function (m) {
+      var codes = m.slice(1), bull = codes.filter(function (c) { return c.slice(-1) === "+"; }), bear = codes.filter(function (c) { return c.slice(-1) === "-"; });
+      var use = bull.length >= bear.length ? bull : bear, isBull = use === bull;
+      return { time: m[0], position: isBull ? "belowBar" : "aboveBar", color: isBull ? up : dn, shape: isBull ? "arrowUp" : "arrowDown",
+        text: use.map(function (c) { return SHORT[c.slice(0, -1)] || c; }).join("+") };
+    }).filter(function (m) { return m.text; }));
+  }
   [30, 70].forEach(function (lv) { rsiS.createPriceLine({ price: lv, color: css("--muted"), lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: String(lv) }); });
   // развороты (зигзаг) с этого таймфрейма
   var st = (DATA.map[CH.s] || {})[CH.tf];
@@ -395,6 +431,7 @@ function renderSide() {
         '<div class="small mono">вход ' + px(x.entry) + " · стоп " + px(x.stop) + " · тейк " + px(x.take) + " · R:R " + (isFinite(x.rr) ? "1:" + fmt(x.rr, 1) : "—") + "</div>" +
         ((x.trg || []).length ? '<div class="small">Триггер: ' + x.trg.map(esc).join(", ") + "</div>" : '<div class="note">Триггера пока нет — ждём свечу в зоне.</div>') +
         (rsiHtml(x.rsi) ? '<div class="row">' + rsiHtml(x.rsi) + "</div>" : "") +
+        (x.pa && (x.pa.ok.length || x.pa.warn.length) ? '<div class="row">' + paHtml(x.pa) + "</div>" : "") + cfHtml(x.cf) +
         (!h ? '<button type="button" class="btn ghost small" data-usehit="' + i + '">Показать уровни на графике</button>' : "") + "</div>";
     });
     html += "</div>";
@@ -403,6 +440,7 @@ function renderSide() {
   } else {
     html += '<div class="note">По правилам сканера паттернов сейчас нет. Можно всё равно добавить в watchlist.</div>';
   }
+  html += paBlock(t);
   var base = h || found[0] || null;
   var lvl = base ? base.level : t.px, isAbove = isFinite(t.px) && isFinite(lvl) ? t.px >= lvl : true;
   html += '<form class="stack" id="wlForm" style="gap:8px"><h3>В watchlist и алерт</h3><div class="fields">' +
@@ -464,8 +502,10 @@ function prefillTrade(s, h) {
     var c = readCalc(); c.entry = +(+h.entry).toFixed(4); c.stop = +(+h.stop).toFixed(4); c.take = +(+h.takeLevel).toFixed(4); c.tp = "0.8";
     setCalc(c); setDir(h.dir, true);
     $("#calcNote").textContent = "Цифры из сканера: вход у уровня, стоп за уровнем на 0,5 ATR, тейк — следующий уровень. Поправьте по факту на графике.";
-    if (h.trg && h.trg.length) { var tm = { "пинбар": TRIGGERS[4], "поглощение": TRIGGERS[3], "харами": TRIGGERS[2], "ложный пробой одной свечой": TRIGGERS[0], "ложный пробой двумя свечами": TRIGGERS[1] }; if (tm[h.trg[0]]) $("#t_trigger").value = tm[h.trg[0]]; }
-    checks = {}; if (h.mT !== (h.dir === "long" ? "down" : "up")) checks.c1 = true; if (!(isFinite(h.eDays) && h.eDays >= 0 && h.eDays <= 14)) checks.c10 = true; if (h.rsi && h.rsi.ok.length) checks.c15 = true;
+    if (h.trg && h.trg.length) { var tm = { "пинбар": TRIGGERS[4], "поглощение": TRIGGERS[3], "харами": TRIGGERS[2], "ложный пробой одной свечой": TRIGGERS[0], "ложный пробой двумя свечами": TRIGGERS[1],
+      "молот": TRIGGERS[9], "перевёрнутый молот": TRIGGERS[9], "утренняя звезда": TRIGGERS[10], "вечерняя звезда": TRIGGERS[10], "пинцет": TRIGGERS[11], "три внутри вверх": TRIGGERS[12], "три внутри вниз": TRIGGERS[12],
+      "бычий марибозу": TRIGGERS[13], "медвежий марибозу": TRIGGERS[13], "три белых солдата": TRIGGERS[13], "три чёрных вороны": TRIGGERS[13], "повешенный": TRIGGERS[9], "падающая звезда": TRIGGERS[9] }; if (tm[h.trg[0]]) $("#t_trigger").value = tm[h.trg[0]]; }
+    checks = {}; if (h.mT !== (h.dir === "long" ? "down" : "up")) checks.c1 = true; if (!(isFinite(h.eDays) && h.eDays >= 0 && h.eDays <= 14)) checks.c10 = true; if (h.rsi && h.rsi.ok.length) checks.c15 = true; if (h.cf && h.cf.n >= 3 && h.trg.length && !(h.pa && h.pa.warn.some(function (w) { return /слабеют|против нас/.test(w); }))) checks.c16 = true;
     $$("#checklist input").forEach(function (i) { i.checked = !!checks[i.id]; });
   }
   onTradeChange();
@@ -703,6 +743,12 @@ function renderMgmt() {
     else if (rd.ob) adv += "<div class='small'>RSI на дневке в " + hiZ + ": идут активные " + (s > 0 ? "покупки" : "продажи") + " — движение в нашу сторону.</div>";
     if (rd.div || rw.div) adv += "<div class='small'><b>RSI: " + (s > 0 ? "дивергенция" : "конвергенция") + " против позиции</b> (" + (rw.div ? "W" : "D") + ") — " + (s > 0 ? "покупатели" : "продавцы") + " заканчиваются. По уроку — фиксировать вручную.</div>";
   }
+  if (q && isFinite(cur)) {
+    var pd = SC.paInfo(q.D, s), pw = SC.paInfo(q.W, s), us = s > 0 ? "покупатели" : "продавцы";
+    if (pd && pd.own.length >= 3) adv += "<div class='small'><b>Прайс экшен (D): " + us + " слабеют</b> — " + esc(pd.own.join(", ")) + ". Тренд затухает: думать о фиксации.</div>";
+    else if (pw && pw.own.length >= 3) adv += "<div class='small'><b>Прайс экшен (W): " + us + " слабеют</b> — " + esc(pw.own.join(", ")) + ".</div>";
+    if (pd && (pd.ch === "strong-" || pd.against.length)) adv += "<div class='small'><b>Свеча против позиции (D):</b> " + esc(pd.against.length ? pd.against.join(", ") : "большое тело без теней") + ". Если есть слом структуры — закрываем вручную.</div>";
+  }
   if (isFinite(rep) && rep >= 0 && rep <= 14) { adv += "<div class='small'><b>Через " + rep + " дн. отчёт:</b> прибыльную позицию частично фиксируем.</div>"; if (path > 0) cls = "wait"; }
   var mg = t.mg || {}, ml = { third: "пройдена треть", take: "цена у тейка", stop: "цена у стопа" };
   var tg = Object.keys(ml).filter(function (k) { return mg[k]; }).map(function (k) { return ml[k] + " (" + new Date(mg[k]).toLocaleDateString("ru-RU") + ")"; });
@@ -837,6 +883,7 @@ function initGuide() {
   html += sec("Азбука: шесть «букв»", '<div class="tbl-wrap"><table><thead><tr><th>Импульсы</th><th>Коррекции</th></tr></thead><tbody><tr><td><b>Обновил</b> — тренд</td><td><b>Стандартная</b> — тренд продолжается</td></tr><tr><td><b>Вровень</b> — флет под вопросом</td><td><b>Вровень</b> — флет</td></tr><tr><td><b>Не обновил</b> — первый признак слома</td><td><b>= новый импульс</b> — слом</td></tr></tbody></table></div><p>Пройдено 61,8% старшего импульса — покупки не рассматриваем.</p>');
   html += sec("Триггеры входа", "<ul><li><b>Ложный пробой</b> (1 свеча, 2 свечи, харами, поглощение) — стоп за ложным пробоем.</li><li><b>Отскок</b> пинбаром или двумя свечами — только с подтверждением сломом на младшем ТФ.</li><li><b>Пробой</b>: с 1-го раза не торгуем, со 2-го — по закрытию свечи, с 3-го — любимая ТВХ.</li><li><b>Ретест</b>: уровни, пробитые с 3-го раза, и уровни слома ретестятся почти всегда.</li></ul>");
   html += sec("RSI (индекс относительной силы)", "<ul><li><b>RSI(14), уровни 30 и 70.</b> Выше 70 — перекупленность, ниже 30 — перепроданность, середина — «зона неинтересно»: сигналов там нет.</li><li><b>Только по тренду.</b> Выход из перепроданности (пересечение 30 снизу вверх) — дополнительное подтверждение запланированной ТВХ: ретест, ложный пробой, нижняя граница флета. В шорт — выход из перекупленности через 70. Против тренда сигнал обманный.</li><li><b>Конвергенция</b> у зоны входа: цена обновила минимум, а RSI — нет (продавцы кончаются). Сильный повод искать покупку.</li><li><b>Дивергенция</b> на максимумах: цена обновила максимум, RSI — нет (покупатель кончился). Фиксируем вручную.</li><li>Перекупленность на <b>D</b> — идут активные покупки. На <b>W и MN</b> — пора думать о фиксации. Все ТФ в перекупленности — продолжение 50/50, лучше фиксировать.</li><li>На акциях D, W, MN редко заходят в зоны — входы по RSI ищите на <b>H4</b> (и H1). Уход H1/H4 в перекупленность по тренду — пошли большие деньги: можно войти раньше закрытия дневной свечи (ближе к концу сессии), стоп короче, без риска гэпа.</li><li>Скользящие (MA) запаздывают: если техника уже дала ложный пробой, а 50 и 200 вот-вот пересекутся — входим по технике, не ждём пересечения.</li><li>RSI, свечи, скользящие — только помощники. Основа — теханализ и фундамент.</li></ul>");
+  html += sec("Прайс экшен", "<ul><li><b>Кто контролирует рынок</b> — быки или медведи — видно по свечам и волнам, без индикаторов. Основа: уровни + свечи.</li><li><b>Тренд затухает</b>, если: импульсы короче; импульсы положе; коррекции круче; свечи импульсов мельче; свечи коррекций крупнее. Сканер пишет «покупатели слабеют» или «продавцы выдыхаются».</li><li><b>Контекст и место важнее самой свечи.</b> Пинбар на важном уровне значит много, в середине графика — ничего. Заучивать паттерны не нужно — нужно понимать, что свеча говорит о настроении.</li><li><b>Тело и тени:</b> большое тело без теней — сила; маленькое тело и большие тени — нерешительность; маленькое тело без теней — нет интереса; большое тело с длинными тенями — волатильность. Длинные тени у уровня — отторжение уровня.</li><li><b>Одиночные:</b> марибозу — продолжение; волчок и доджи — неопределённость (доджи сам по себе не сигнал); пинбар — отскок от уровня.</li><li><b>Комбинации:</b> поглощение — сильный разворот, на откатах в тренде годится для добора; утренняя / вечерняя звезда (третья свеча подтверждает, гэп усиливает); молот после падения и повешенный после роста — одна форма, разный смысл (молот надёжнее с бычьей свечой следом); перевёрнутый молот / падающая звезда; пинцет — равные экстремумы после тренда; харами, три внутри, три солдата / вороны.</li><li><b>Факторы слияния:</b> ключевой уровень, свеча-сигнал на нём, тренд, свободное пространство до цели, скользящие рядом, RSI. Каждый ≈ +15–20% к вероятности, но 100% не бывает — стоп всегда. В сканере — метка «слияние N/7» и фильтр.</li><li>На графике стрелки ↑ и ↓ — найденные свечные модели (переключатель «Свечные модели»).</li></ul>");
   html += sec("Риск и тейк", "<ul><li>Риск 1% на сделку с комиссией, до ~15 позиций.</li><li>R:R: 1:1 — минус; 1:2 — минимум; цель 1:3+. При 1:3 доля прибыльных 45% — очень хороший результат, 50% — удвоение депозита.</li><li>Тейк — следующий уровень, ~80% пути.</li><li>Перед отчётом не входим, прибыльные позиции частично фиксируем.</li></ul>");
   html += sec("Сопровождение сделки", "<ul><li><b>Стоп двигаем только при новой ТВХ</b> (ретест, пробой, выход из накопления, ложный пробой), лучше с подтверждением на H4. Стоп всегда за последним минимумом — за паттерном последнего входа.</li><li><b>Докупка</b> — отдельная сделка: своя ТВХ, свой стоп, риск от текущего депозита. Тейк общий (по старшему ТФ). Стопы всех прежних частей переносим на стоп докупки: первые части оказываются в безубытке или в плюсе.</li><li><b>У тейка</b>: закрыть всё; или на личном счёте при сильном тренде — закрыть 50% (иногда 80%), стоп в безубыток, тейк убрать и держать по тренду.</li><li><b>Закрыть вручную</b> — если нарисовался максимум (две свечи против нас) и подтверждён слом структуры, а не «кажется». Причину — в журнал.</li><li><b>Правило сейфа</b> (по желанию): путь до тейка делим на 3 части; прошли треть — закрыть 50% и стоп в безубыток, дальше стоп подтягиваем. Лучше работает на W и MN, на форексе и крипте; придумано, чтобы новичок не терял много.</li><li>Сопровождение — ежедневно ~30 минут. Если по журналу «зря закрыл» повторяется — не смотрите в терминал: только стоп или тейк.</li><li>1–2 числа месяца проверяйте закрытие месячных свечей.</li></ul>");
   html += '<p class="note">Конспект обучающего курса для самостоятельной работы, не инвестиционная рекомендация. Графики: TradingView Lightweight Charts™.</p>';
@@ -903,6 +950,7 @@ $("#chClose").onclick = closeChart;
 $("#chartModal").addEventListener("click", function (e) { if (e.target.id === "chartModal") closeChart(); });
 document.addEventListener("keydown", function (e) { if (e.key === "Escape" && $("#chartModal").classList.contains("on")) closeChart(); });
 $$("[data-ctf]").forEach(function (b) { b.onclick = function () { CH.tf = b.dataset.ctf; drawChart(); }; });
+$("#chMarks").addEventListener("change", drawChart);
 loadData();
 Sync.pull();
 document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") Sync.pull(); });
