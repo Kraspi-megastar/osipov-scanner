@@ -4,6 +4,8 @@
 1. Список бумаг: все акции NASDAQ/NYSE/AMEX с капитализацией от MIN_CAP (по умолчанию 10 млрд $).
 2. Котировки (yfinance): месяц (до 25 лет), неделя (10 лет), день (2 года), 4 часа (год; собираются из часовых свечей
    по сессии США: 9:30–13:30 и 13:30–16:00 по Нью-Йорку, как в TradingView).
+4. Фундамент (бета, short float, целевая цена, EPS/выручка/акции по кварталам) — кэш, обновление по кругу раз в ~неделю;
+   календарь важных новостей США (Forex Factory + решения ФРС + NFP).
 3. Для каждого таймфрейма: развороты (зигзаг по ATR), ATR, RSI(14), последние две свечи и свечные модели,
    прайс экшен (характер свечи, волны, доля бычьих тел), скользящие 50/100/200.
 4. Даты ближайших отчётов.
@@ -20,7 +22,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -413,8 +415,132 @@ def load_earnings(tickers, workers=8):
     return res
 
 
+# ---------------------------------------------------------------- фундамент (урок «Фундамент»)
+FUND_MAX_AGE = 6        # дней: фундамент меняется раз в квартал, обновляем по кругу
+FUND_PER_RUN = 350      # сколько бумаг обновлять за запуск (чтобы не упереться в лимиты Yahoo)
+
+
+def _num(x, k=1.0, nd=3):
+    try:
+        x = float(x)
+        return round(x * k, nd) if math.isfinite(x) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def fund_for(sym):
+    """Показатели, на которые смотрит автор: бета, short float, целевая цена аналитиков,
+    EPS, выручка и число акций по кварталам (как столбики под графиком Finviz)."""
+    import yfinance as yf
+    t = yf.Ticker(sym)
+    f = {}
+    try:
+        info = t.info or {}
+        f["b"] = _num(info.get("beta"), nd=2)
+        f["sf"] = _num(info.get("shortPercentOfFloat"), 100, 1)
+        f["tp"] = _num(info.get("targetMeanPrice"), nd=2)
+        f["na"] = info.get("numberOfAnalystOpinions")
+        te, fe = _num(info.get("trailingEps")), _num(info.get("forwardEps"))
+        f["eg"] = round(fe / te - 1, 3) if te and fe and te > 0 else None  # ожидаемый рост EPS за 12 мес.
+        f["rg"] = _num(info.get("revenueGrowth"), nd=3)
+    except Exception:  # noqa
+        pass
+    try:
+        q = t.quarterly_income_stmt
+        if q is not None and not q.empty:
+            q = q[sorted(q.columns)]  # от старых к новым
+
+            def row(names, k=1.0, nd=3):
+                for n in names:
+                    if n in q.index:
+                        return [_num(x, k, nd) for x in q.loc[n].tolist()[-5:]]
+                return None
+            f["eq"] = row(["Diluted EPS", "Basic EPS"], nd=2)
+            f["rq"] = row(["Total Revenue", "Operating Revenue"], 1e-9, 3)     # млрд $
+            f["sq"] = row(["Diluted Average Shares", "Basic Average Shares"], 1e-6, 1)  # млн акций
+    except Exception:  # noqa
+        pass
+    return {k: v for k, v in f.items() if v not in (None, [], {})}
+
+
+def load_fund(tickers, cache_path, workers=6):
+    """Кэш фундамента: каждый запуск обновляет устаревшие записи (сначала отсутствующие)."""
+    cache = {}
+    if os.path.exists(cache_path):
+        try:
+            cache = json.load(open(cache_path, encoding="utf-8"))
+        except Exception:  # noqa
+            cache = {}
+    today = date.today()
+
+    def age(s):
+        at = cache.get(s, {}).get("at")
+        return (today - date.fromisoformat(at)).days if at else 10 ** 6
+    todo = sorted((s for s in tickers if age(s) > FUND_MAX_AGE), key=age, reverse=True)[:FUND_PER_RUN]
+    with ThreadPoolExecutor(workers) as ex:
+        futs = {ex.submit(fund_for, s): s for s in todo}
+        for fu in as_completed(futs):
+            try:
+                v = fu.result(timeout=60)
+            except Exception:  # noqa
+                v = None
+            if v:
+                v["at"] = today.isoformat()
+                cache[futs[fu]] = v
+    with open(cache_path, "w", encoding="utf-8") as fh:
+        json.dump(cache, fh, separators=(",", ":"))
+    print(f"Фундамент: обновлено {len(todo)}, в кэше {len(cache)}")
+    return cache
+
+
+# ---------------------------------------------------------------- календарь важных новостей США
+# Решения ФРС по ставке — второй день заседания, 14:00 по Нью-Йорку (federalreserve.gov).
+FOMC = ["2026-12-09", "2027-01-27", "2027-03-17", "2027-04-28", "2027-06-09", "2027-07-28", "2027-09-15", "2027-11-17", "2028-01-26"]
+
+
+def first_fridays(start, months=3):
+    out, y, m = [], start.year, start.month
+    for _ in range(months):
+        d = date(y, m, 1)
+        while d.weekday() != 4:
+            d += timedelta(days=1)
+        if d.month == 1 and d.day == 1:  # 1 января — праздник, отчёт неделей позже
+            d += timedelta(days=7)
+        out.append(d)
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    return out
+
+
+def load_calendar():
+    """Важные новости США на неделю: Forex Factory (если доступен) + решения ФРС + Non-Farm Payrolls (первая пятница)."""
+    events, src = [], []
+    for url in ("https://nfs.faireconomy.media/ff_calendar_thisweek.json", "https://nfs.faireconomy.media/ff_calendar_nextweek.json"):
+        try:
+            import requests
+            r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            if r.ok:
+                for e in r.json():
+                    if e.get("country") == "USD" and e.get("impact") == "High":
+                        events.append({"t": e.get("date"), "n": e.get("title"), "f": e.get("forecast") or "", "p": e.get("previous") or ""})
+                src.append(url.rsplit("/", 1)[-1])
+        except Exception as ex:  # noqa
+            print("Календарь:", url, ex, file=sys.stderr)
+    today = date.today()
+    have = {(e["t"] or "")[:10] for e in events}
+    for d in FOMC:
+        if today <= date.fromisoformat(d) <= today + timedelta(days=45) and d not in have:
+            events.append({"t": d + "T14:00:00-05:00", "n": "Решение ФРС по процентной ставке (FOMC)", "f": "", "p": "", "rule": 1})
+    for d in first_fridays(today):
+        if today <= d <= today + timedelta(days=45) and d.isoformat() not in have:
+            events.append({"t": d.isoformat() + "T08:30:00-05:00", "n": "Non-Farm Payrolls (обычно первая пятница месяца — проверьте дату)", "f": "", "p": "", "rule": 1})
+    events.sort(key=lambda e: e["t"] or "")
+    return {"updated": datetime.now(timezone.utc).isoformat(timespec="minutes"), "src": src, "events": events}
+
+
 # ---------------------------------------------------------------- сборка
-def build(out, frames=None, universe=None, earnings=None):
+def build(out, frames=None, universe=None, earnings=None, fund=None, calendar=None):
     os.makedirs(os.path.join(out, "charts"), exist_ok=True)
     prev = os.path.join(out, "universe.json")
     uni = universe if universe is not None else load_universe(prev)
@@ -429,6 +555,12 @@ def build(out, frames=None, universe=None, earnings=None):
             frames["H4"] = {s: to_h4(df) for s, df in hourly.items()}
     if earnings is None:
         earnings = load_earnings(syms) if os.environ.get("SKIP_EARNINGS") != "1" else {}
+    if fund is None:
+        fund = load_fund(syms, os.path.join(out, "fund.json")) if os.environ.get("SKIP_FUND") != "1" else {}
+    if calendar is None:
+        calendar = load_calendar() if os.environ.get("SKIP_CAL") != "1" else {"events": []}
+    with open(os.path.join(out, "calendar.json"), "w", encoding="utf-8") as fh:
+        json.dump(calendar, fh, ensure_ascii=False)
     limits = {"M": 300, "W": 520, "D": 500, "H4": 500}
     items, failed, h4n = [], [], 0
     for u in uni:
@@ -460,13 +592,17 @@ def build(out, frames=None, universe=None, earnings=None):
         rec["px"] = rec["D"]["lb"][3]
         if s in earnings:
             rec["e"] = earnings[s]
+        fu = {k: v for k, v in (fund.get(s) or {}).items() if k != "at"}
+        if fu:
+            rec["f"] = fu
         items.append(rec)
         with open(os.path.join(out, "charts", f"{s}.json"), "w", encoding="utf-8") as f:
             json.dump(chart, f, separators=(",", ":"))
     now = datetime.now(timezone.utc).isoformat(timespec="minutes")
     with open(prev, "w", encoding="utf-8") as f:
         json.dump({"updated": now, "zz": ZZ_K, "t": items}, f, ensure_ascii=False, separators=(",", ":"))
-    meta = {"updated": now, "count": len(items), "h4": h4n, "failed": failed[:200], "failedCount": len(failed),
+    meta = {"updated": now, "count": len(items), "h4": h4n, "fund": sum(1 for x in items if "f" in x),
+            "news": len(calendar.get("events", [])), "failed": failed[:200], "failedCount": len(failed),
             "minCapBn": MIN_CAP / 1e9}
     with open(os.path.join(out, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)

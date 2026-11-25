@@ -99,6 +99,10 @@ tr.ex td{color:var(--muted);font-style:italic}
 .pos{color:var(--up)} .neg{color:var(--down)}
 .empty{padding:22px;text-align:center;color:var(--muted)}
 .edit-panel{border:2px solid var(--accent)}
+.newsbar{margin:0 0 12px;padding:10px 14px;border-radius:10px;border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--panel));font-size:13px;line-height:1.5}
+.newsbar b{font-weight:600}
+.sectab{width:100%;border-collapse:collapse;font-size:13px}.sectab td,.sectab th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left}.sectab td.n,.sectab th.n{text-align:right;font-variant-numeric:tabular-nums}.sectab tr[data-sec]{cursor:pointer}.sectab tr[data-sec]:hover{background:var(--paper)}
+.qbars{display:flex;gap:3px;align-items:flex-end;height:28px}.qbars i{display:block;width:10px;background:var(--accent);border-radius:2px 2px 0 0}.qbars i.neg{background:var(--down)}
 .cf{margin:2px 0 0;padding-left:4px;list-style:none;font-size:12px;line-height:1.5}
 .qr{background:#fff;border-radius:8px;padding:6px;width:220px;max-width:100%}
 .qr svg{display:block;width:100%;height:auto}
@@ -166,6 +170,7 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
 </header>
 
 <main>
+<div id="newsBar" class="newsbar" hidden></div>
 <!-- ===== СКАНЕР ===== -->
 <section class="view" id="v-scan">
   <div class="grid-scan">
@@ -188,6 +193,7 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
           <label><input type="checkbox" id="oW"> Недельная тенденция не против (для дневки)</label>
           <label><input type="checkbox" id="oEarn"> Без отчёта в ближайшие 14 дней</label>
           <label><input type="checkbox" id="oTrg"> Только со свечным триггером</label>
+          <label><input type="checkbox" id="oBeta"> Бета не ниже 1 (медленные бумаги не берём)</label>
           <label><input type="checkbox" id="oRsi"> Только с подтверждением RSI (выход из зоны, конвергенция)</label></div></div>
         <div class="fields">
           <label class="f"><span>R:R не ниже</span><select id="oRR"><option value="0">любой</option><option value="1.5">1 : 1,5</option><option value="2">1 : 2</option><option value="3">1 : 3</option></select></label>
@@ -203,6 +209,7 @@ details.sec .body{padding:0 16px 16px;max-width:78ch}
         <div class="row"><input type="search" id="tickerSearch" placeholder="Открыть график: тикер" style="max-width:220px" autocomplete="off" autocapitalize="characters"><button class="btn" type="button" id="openTicker">Открыть</button></div>
         <span class="note" id="scanSummary"></span>
       </div>
+      <details class="panel sec" id="secPanel"><summary>Сектора: куда смотрит рынок</summary><div class="body" id="secBody"></div></details>
       <div id="hits" class="hits"></div>
     </div>
   </div>

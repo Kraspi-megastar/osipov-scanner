@@ -35,6 +35,7 @@ var CHECKS = [
   { g: "Фильтры и риск", items: [
     { id: "c9", t: "Не середина флета", crit: 1 },
     { id: "c10", t: "Нет отчёта в ближайшие ~2 недели", crit: 1 },
+    { id: "c17", t: "Фундамент: сегодня нет сильных новостей (ставка, ВВП, NFP, инфляция), не понедельник; EPS и выручка не против, бета не ниже 1; сектор не перегружен" },
     { id: "c11", t: "Ниже нет неотретестированного уровня, ради которого стоит подождать" },
     { id: "c12", t: "Стоп за ближайшим минимумом (при шорте — максимумом), не ближе, чем требует структура", crit: 1 },
     { id: "c13", t: "Тейк — следующий ценовой уровень или высота фигуры" },
@@ -87,6 +88,36 @@ function paBlock(t) {
   });
   return rows.length ? '<div class="stack" style="gap:4px"><h3>Прайс экшен</h3>' + rows.join("") + "</div>" : "";
 }
+function base0(h, found) { return h || (found && found[0]) || null; }
+// Фундамент (урок «Фундамент»): показатели под графиком Finviz + запрос к ИИ из рабочего процесса автора
+function aiPrompt(s, name) {
+  return "Акция " + s + (name ? " (" + name + ")" : "") + ". Ответь по-русски, кратко и по пунктам:\n" +
+    "1. Последние важные события компании.\n2. Ближайшие важные события (отчёт, продукты, суды, регуляторы, сделки).\n" +
+    "3. Сравни с основными конкурентами — таблицей по ключевым показателям (рост выручки и EPS, маржа, P/E, долг).\n" +
+    "4. Основные риски для покупки сейчас.";
+}
+function fundBlock(t, hit) {
+  var dirS = hit && hit.dir === "short" ? -1 : 1, x = SC.fundInfo(t, dirS);
+  var h = '<div class="stack" style="gap:6px"><h3>Фундамент</h3>';
+  if (!x) h += '<div class="note">Показателей пока нет — они подгружаются по кругу, около недели на весь рынок. Смотрите столбики под графиком Finviz.</div>';
+  else {
+    var f = x.f, bars = function (arr, k) { if (!arr || !arr.length) return ""; var m = Math.max.apply(null, arr.map(function (v) { return Math.abs(v || 0); })) || 1;
+      return '<span class="qbars" title="по кварталам, от старых к новым">' + arr.map(function (v) { return '<i class="' + (v < 0 ? "neg" : "") + '" style="height:' + Math.max(2, Math.round(Math.abs(v || 0) / m * 26)) + 'px" title="' + (v == null ? "—" : fmt(v, k)) + '"></i>'; }).join("") + "</span>"; };
+    var pct = function (v) { return isFinite(v) ? (v >= 0 ? "+" : "") + Math.round(v * 100) + "%" : "—"; };
+    h += '<div class="tiles">' +
+      kv("Бета", isFinite(f.b) ? fmt(f.b, 2) + (f.b < 1 ? ' <span class="tag">< 1</span>' : "") : "—") +
+      kv("Short float", isFinite(f.sf) ? fmt(f.sf, 1) + "%" + (f.sf >= 10 ? ' <span class="tag up">топливо</span>' : "") : "—") +
+      kv("Цель аналитиков", isFinite(f.tp) ? px(f.tp) + " (" + pct(x.up) + (f.na ? ", " + f.na + " анал." : "") + ")" : "—") +
+      kv("EPS г/г", pct(x.epsY) + (isFinite(f.eg) ? ' <span class="muted">ожид. ' + pct(f.eg) + "</span>" : "") + " " + bars(f.eq, 2)) +
+      kv("Выручка г/г", pct(x.revY) + " " + bars(f.rq, 2)) +
+      kv("Акций г/г", pct(x.shY) + " " + bars(f.sq, 0)) + "</div>";
+    if (x.ok.length || x.warn.length) h += '<div class="row">' + paHtml({ ok: x.ok, warn: x.warn }) + "</div>";
+    if (x.epsUp && SC.trend(SC.view(t.W, 1)) === "down") h += '<div class="note"><b>EPS растёт, а цена падает:</b> по уроку графики рано или поздно сойдутся — ищем точку разворота по технике.</div>';
+    h += '<div class="note">Прогноз аналитиков — только повод для watchlist и алерта. Покупаем, когда есть разворот и точка входа по технике.</div>';
+  }
+  h += '<div class="row"><button class="btn" type="button" id="copyPrompt">Запрос для ИИ: события, конкуренты, риски</button></div></div>';
+  return h;
+}
 function rsiVal(t, tf) { var r = t && t[tf] && t[tf].r; var x = r && r[r.length - 1]; return x == null ? NaN : x; }
 function rsiZone(x) { return !isFinite(x) ? "" : x > 70 ? " (перекупл.)" : x < 30 ? " (перепрод.)" : ""; }
 function trendTag(t, label) { var c = t === "up" ? "up" : t === "down" ? "down" : ""; return '<span class="tag ' + c + '">' + esc(label) + " " + esc(TREND[t] || "—") + "</span>"; }
@@ -138,7 +169,7 @@ var Sync = {
       var loc = Store.st;
       var lp = loc.prefs || {}, rp = remote.prefs || {};
       var merged = { version: 2, trades: mergeArr(remote.trades, loc.trades), plans: mergeArr(remote.plans, loc.plans), settings: Object.assign({}, loc.settings || {}, remote.settings || {}),
-        prefs: (rp.u || 0) > (lp.u || 0) ? rp : lp };
+        prefs: (rp.u || 0) > (lp.u || 0) ? rp : lp, calendar: remote.calendar || loc.calendar };  // календарь пишет только скрипт алертов
       var changed = JSON.stringify(merged.trades) !== JSON.stringify(remote.trades || []) || JSON.stringify(merged.plans) !== JSON.stringify(remote.plans || []) ||
         stable(merged.prefs || {}) !== stable(rp);
       var newPrefs = merged.prefs === rp && rp.u && rp.u !== lp.u;
@@ -239,8 +270,10 @@ var DATA = { uni: null, meta: null, map: {}, sectors: [] };
 function loadData() {
   return Promise.all([
     fetch("data/universe.json", { cache: "no-cache" }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }),
-    fetch("data/meta.json", { cache: "no-cache" }).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
+    fetch("data/meta.json", { cache: "no-cache" }).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }),
+    fetch("data/calendar.json", { cache: "no-cache" }).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
   ]).then(function (res) {
+    DATA.cal = res[2] || null; renderNews();
     DATA.uni = res[0].t || []; DATA.meta = res[1] || { updated: res[0].updated, count: DATA.uni.length };
     DATA.map = {}; var secs = {};
     DATA.uni.forEach(function (t) { DATA.map[t.s] = t; if (t.sec) secs[t.sec] = 1; });
@@ -252,6 +285,7 @@ function loadData() {
     var sel = $("#oSector"), cur = SCFG.sector;
     sel.innerHTML = '<option value="">все</option>' + DATA.sectors.map(function (s) { return "<option" + (s === cur ? " selected" : "") + ">" + esc(s) + "</option>"; }).join("");
     $("#runScan").disabled = false;
+    renderSectors();
     if (SCFG.auto !== false) runScan();
   }).catch(function () {
     $("#dataInfo").textContent = "данные недоступны";
@@ -261,7 +295,7 @@ function loadData() {
 
 /* ======================= сканер ======================= */
 var SCFG = Object.assign({ tf: "D", dir: "long", setups: { breakK: 1, breakN: 1, prevHigh: 1, line: 1, flatLow: 1, flatRetest: 1, third: 1, dbl: 1 },
-  zIn: true, zNear: true, mn: true, w: true, earn: true, trg: false, rsi: false, cf: "0", rr: "2", cap: 10, sector: "" }, lsGet(LS_SCAN, {}));
+  zIn: true, zNear: true, mn: true, w: true, earn: true, trg: false, rsi: false, cf: "0", beta: true, rr: "2", cap: 10, sector: "" }, lsGet(LS_SCAN, {}));
 var LAST = [];
 function initScan() {
   var box = $("#oSetups"), html = "";
@@ -282,7 +316,7 @@ function initScan() {
 function scanInputs() {
   $$("[data-setup]").forEach(function (i) { i.checked = !!SCFG.setups[i.dataset.setup]; });
   $("#oZoneIn").checked = SCFG.zIn; $("#oZoneNear").checked = SCFG.zNear; $("#oMn").checked = SCFG.mn; $("#oW").checked = SCFG.w;
-  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRsi").checked = !!SCFG.rsi; $("#oRR").value = SCFG.rr; $("#oCf").value = SCFG.cf || "0"; $("#oCap").value = SCFG.cap;
+  $("#oEarn").checked = SCFG.earn; $("#oTrg").checked = SCFG.trg; $("#oRsi").checked = !!SCFG.rsi; $("#oRR").value = SCFG.rr; $("#oCf").value = SCFG.cf || "0"; $("#oBeta").checked = SCFG.beta !== false; $("#oCap").value = SCFG.cap;
   if (SCFG.sector != null && $("#oSector").querySelector('option[value="' + SCFG.sector.replace(/"/g, "") + '"]')) $("#oSector").value = SCFG.sector;
   segSync();
 }
@@ -293,7 +327,7 @@ function segSync() {
 function readScanCfg() {
   $$("[data-setup]").forEach(function (i) { SCFG.setups[i.dataset.setup] = i.checked ? 1 : 0; });
   SCFG.zIn = $("#oZoneIn").checked; SCFG.zNear = $("#oZoneNear").checked; SCFG.mn = $("#oMn").checked; SCFG.w = $("#oW").checked;
-  SCFG.earn = $("#oEarn").checked; SCFG.trg = $("#oTrg").checked; SCFG.rsi = $("#oRsi").checked; SCFG.rr = $("#oRR").value; SCFG.cf = $("#oCf").value; SCFG.cap = num($("#oCap").value) || 0; SCFG.sector = $("#oSector").value;
+  SCFG.earn = $("#oEarn").checked; SCFG.trg = $("#oTrg").checked; SCFG.rsi = $("#oRsi").checked; SCFG.rr = $("#oRR").value; SCFG.cf = $("#oCf").value; SCFG.beta = $("#oBeta").checked; SCFG.cap = num($("#oCap").value) || 0; SCFG.sector = $("#oSector").value;
 }
 function saveScanCfg() { lsSet(LS_SCAN, SCFG); savePrefs(); }
 function engineCfg(all) {
@@ -301,7 +335,7 @@ function engineCfg(all) {
   var zones = all ? ["in", "near"] : [].concat(SCFG.zIn ? ["in"] : [], SCFG.zNear ? ["near"] : []);
   return { tf: SCFG.tf, dirs: SCFG.dir === "both" ? ["long", "short"] : [SCFG.dir], setups: setups, tol: 0.75, stopAtr: 0.5,
     mnFilter: all ? false : SCFG.mn, wFilter: all ? false : SCFG.w, earnDays: 14, earnExclude: all ? false : SCFG.earn,
-    minRR: all ? 0 : num(SCFG.rr) || 0, zones: zones, minCap: all ? 0 : SCFG.cap, sector: all ? "" : SCFG.sector, today: today(), minCf: all ? 0 : num(SCFG.cf) || 0 };
+    minRR: all ? 0 : num(SCFG.rr) || 0, zones: zones, minCap: all ? 0 : SCFG.cap, sector: all ? "" : SCFG.sector, today: today(), minCf: all ? 0 : num(SCFG.cf) || 0, betaMin: all ? false : SCFG.beta !== false };
 }
 function runScan() {
   if (!DATA.uni) return;
@@ -319,7 +353,7 @@ function runScan() {
     bar.style.width = "100%"; setTimeout(function () { bar.style.width = "0"; }, 400);
     var inZ = LAST.filter(function (h) { return h.zone === "in"; }).length;
     $("#scanSummary").textContent = "Найдено " + LAST.length + " бумаг (в зоне: " + inZ + ", на подходе: " + (LAST.length - inZ) + ") · " + Math.round(performance.now() - t0) + " мс";
-    renderHits();
+    renderHits(); renderSectors();
   }, 30);
 }
 function renderHits() {
@@ -328,7 +362,7 @@ function renderHits() {
   el.innerHTML = LAST.slice(0, 300).map(function (h, i) {
     var zone = h.zone === "in" ? '<span class="tag up">в зоне</span>' : '<span class="tag acc">до зоны ' + fmt(Math.abs(h.dAtr), 1) + " ATR</span>";
     var trg = (h.trg || []).map(function (x) { return '<span class="tag warn">' + esc(x) + "</span>"; }).join(" ");
-    var rs = rsiHtml(h.rsi) + (h.pa ? " " + paHtml(h.pa) : "");
+    var rs = rsiHtml(h.rsi) + (h.pa ? " " + paHtml(h.pa) : "") + (h.fu ? " " + paHtml(h.fu) + (isFinite(h.fu.up) ? ' <span class="tag">цель аналитиков ' + (h.fu.up >= 0 ? "+" : "") + Math.round(h.fu.up * 100) + "%</span>" : "") : "");
     var cfb = h.cf ? '<span class="tag ' + (h.cf.n >= 4 ? "up" : h.cf.n >= 3 ? "acc" : "") + '" title="Структурные факторы слияния">слияние ' + h.cf.n + "/" + h.cf.of + "</span>" : "";
     var earn = isFinite(h.eDays) && h.eDays >= 0 ? '<span class="tag' + (h.eDays <= 14 ? " down" : "") + '">отчёт ' + (h.eDays <= 30 ? "через " + h.eDays + " дн." : esc(h.e)) + "</span>" : "";
     return '<button type="button" class="hit ' + h.dir + '" data-hit="' + i + '" data-s="' + esc(h.s) + '">' +
@@ -441,6 +475,7 @@ function renderSide() {
     html += '<div class="note">По правилам сканера паттернов сейчас нет. Можно всё равно добавить в watchlist.</div>';
   }
   html += paBlock(t);
+  html += fundBlock(t, base0(h, found));
   var base = h || found[0] || null;
   var lvl = base ? base.level : t.px, isAbove = isFinite(t.px) && isFinite(lvl) ? t.px >= lvl : true;
   html += '<form class="stack" id="wlForm" style="gap:8px"><h3>В watchlist и алерт</h3><div class="fields">' +
@@ -454,6 +489,10 @@ function renderSide() {
     '<a class="btn" href="https://finviz.com/quote.ashx?t=' + encodeURIComponent(s) + '" target="_blank" rel="noopener">Finviz</a></div>';
   html += '<div class="note">Синяя ломаная — развороты по ATR. Это подсказка: уровни и триггер проверяйте глазами.</div>';
   var side = $("#chartSide"); side.innerHTML = html;
+  var cpb = $("#copyPrompt"); if (cpb) cpb.onclick = function () {
+    var text = aiPrompt(s, t.n), done = function () { toast("Запрос скопирован — вставьте в Claude или ChatGPT"); };
+    try { navigator.clipboard.writeText(text).then(done, function () { window.prompt("Скопируйте запрос:", text); }); } catch (e) { window.prompt("Скопируйте запрос:", text); }
+  };
   $("#wlForm").addEventListener("submit", function (e) {
     e.preventDefault();
     var b = CH.hit || (CH.found && CH.found[0]) || null;
@@ -505,7 +544,8 @@ function prefillTrade(s, h) {
     if (h.trg && h.trg.length) { var tm = { "пинбар": TRIGGERS[4], "поглощение": TRIGGERS[3], "харами": TRIGGERS[2], "ложный пробой одной свечой": TRIGGERS[0], "ложный пробой двумя свечами": TRIGGERS[1],
       "молот": TRIGGERS[9], "перевёрнутый молот": TRIGGERS[9], "утренняя звезда": TRIGGERS[10], "вечерняя звезда": TRIGGERS[10], "пинцет": TRIGGERS[11], "три внутри вверх": TRIGGERS[12], "три внутри вниз": TRIGGERS[12],
       "бычий марибозу": TRIGGERS[13], "медвежий марибозу": TRIGGERS[13], "три белых солдата": TRIGGERS[13], "три чёрных вороны": TRIGGERS[13], "повешенный": TRIGGERS[9], "падающая звезда": TRIGGERS[9] }; if (tm[h.trg[0]]) $("#t_trigger").value = tm[h.trg[0]]; }
-    checks = {}; if (h.mT !== (h.dir === "long" ? "down" : "up")) checks.c1 = true; if (!(isFinite(h.eDays) && h.eDays >= 0 && h.eDays <= 14)) checks.c10 = true; if (h.rsi && h.rsi.ok.length) checks.c15 = true; if (h.cf && h.cf.n >= 3 && h.trg.length && !(h.pa && h.pa.warn.some(function (w) { return /слабеют|против нас/.test(w); }))) checks.c16 = true;
+    checks = {}; if (h.mT !== (h.dir === "long" ? "down" : "up")) checks.c1 = true; if (!(isFinite(h.eDays) && h.eDays >= 0 && h.eDays <= 14)) checks.c10 = true; if (h.rsi && h.rsi.ok.length) checks.c15 = true; var nr = newsRisk(); if (!nr.today.length && !nr.monday && !(h.fu && h.fu.warn.some(function (w) { return /бета|против|падает|растёт —/.test(w); })) && sectorLoad(s) < 2) checks.c17 = true;
+    if (h.cf && h.cf.n >= 3 && h.trg.length && !(h.pa && h.pa.warn.some(function (w) { return /слабеют|против нас/.test(w); }))) checks.c16 = true;
     $$("#checklist input").forEach(function (i) { i.checked = !!checks[i.id]; });
   }
   onTradeChange();
@@ -557,7 +597,72 @@ function verdict() {
   else if (needLower) { cls = "wait"; html = "<b>Ждать подтверждения на младшем ТФ</b><div class='small'>Отскок пинбаром или двумя свечами — только после слома структуры на младшем таймфрейме.</div>"; }
   else if (r.rr < 3) { cls = "wait"; html = "<b>Можно, но R:R 1 : " + fmt(r.rr, 1) + " ниже 1:3</b><div class='small'>Для сетапа, который у вас в журнале стабильно в плюсе.</div>"; }
   else { cls = "ok"; html = "<b>Сделка по правилам: R:R 1 : " + fmt(r.rr, 1) + "</b><div class='small'>Вход по закрытию свечи, стоп не двигаем.</div>"; }
+  // урок «Фундамент»: новости, понедельник, диверсификация
+  var extra = [], nr = newsRisk(), tk = ($("#t_ticker").value || "").toUpperCase(), sl = sectorLoad(tk);
+  if (nr.monday) extra.push("<b>Понедельник:</b> по методике новые сделки не открываем — отбираем бумаги, входы во вторник–среду.");
+  if (nr.today.length) extra.push("<b>Сегодня сильная новость:</b> " + esc(nr.today.map(newsLine).join("; ")) + ". Новость — казино: перед ней в сделку не входим.");
+  else if (nr.tomorrow.length) extra.push("Завтра сильная новость: " + esc(nr.tomorrow.map(newsLine).join("; ")) + ".");
+  if (sl >= 2) extra.push("В секторе " + esc((DATA.map[tk] || {}).sec || "") + " уже открыто сделок: " + sl + ". Диверсифицируйте — не все яйца в одну корзину.");
+  if (extra.length) { if (cls === "ok" && (nr.monday || nr.today.length)) cls = "wait"; html += extra.map(function (x) { return "<div class='small'>" + x + "</div>"; }).join(""); }
   el.className = "verdict " + cls; el.innerHTML = html;
+}
+
+/* ======================= новости, понедельник, сектора (урок «Фундамент») ======================= */
+var NEWS_RU = { "Non-Farm Employment Change": "Non-Farm Payrolls (занятость вне с/х)", "Unemployment Rate": "Уровень безработицы", "CPI m/m": "Инфляция CPI м/м", "CPI y/y": "Инфляция CPI г/г",
+  "Core CPI m/m": "Базовая инфляция CPI м/м", "Core PCE Price Index m/m": "Базовый индекс цен PCE м/м", "Federal Funds Rate": "Решение ФРС по ставке", "FOMC Statement": "Заявление ФРС",
+  "FOMC Press Conference": "Пресс-конференция ФРС", "Advance GDP q/q": "ВВП (предварительный)", "Prelim GDP q/q": "ВВП (уточнённый)", "Final GDP q/q": "ВВП (финальный)",
+  "Core Retail Sales m/m": "Базовые розничные продажи", "Retail Sales m/m": "Розничные продажи", "ISM Manufacturing PMI": "ISM производство", "ISM Services PMI": "ISM услуги",
+  "PPI m/m": "Цены производителей PPI", "Core PPI m/m": "Базовый PPI", "JOLTS Job Openings": "Вакансии JOLTS", "FOMC Meeting Minutes": "Протокол ФРС" };
+function newsEvents() {
+  var all = [].concat((DATA.cal && DATA.cal.events) || [], (Store.st.calendar && Store.st.calendar.events) || []), seen = {}, now = Date.now();
+  return all.map(function (e) { return { d: new Date(e.t), n: NEWS_RU[e.n] || e.n, f: e.f, p: e.p, rule: e.rule }; })
+    .filter(function (e) { var k = e.d.toISOString().slice(0, 13) + e.n; if (isNaN(e.d) || seen[k] || e.d.getTime() < now - 2 * 3600e3 || e.d.getTime() > now + 8 * 864e5) return false; seen[k] = 1; return true; })
+    .sort(function (a, b) { return a.d - b.d; });
+}
+function dayKey(d) { return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate(); }
+function newsRisk() {
+  var t0 = new Date(), t1 = new Date(Date.now() + 864e5), ev = newsEvents();
+  return { today: ev.filter(function (e) { return dayKey(e.d) === dayKey(t0); }), tomorrow: ev.filter(function (e) { return dayKey(e.d) === dayKey(t1); }), monday: t0.getDay() === 1, all: ev };
+}
+function newsLine(e) {
+  return e.d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) + " — " + e.n + (e.f ? " (прогноз " + e.f + (e.p ? ", было " + e.p : "") + ")" : "");
+}
+function renderNews() {
+  var bar = $("#newsBar"); if (!bar) return;
+  var nr = newsRisk(), parts = [], hidden = lsGet("osipov.newsHide", "") === dayKey(new Date());
+  if (nr.monday) parts.push("<b>Понедельник:</b> по методике не торгуем — отбираем бумаги и ставим алерты.");
+  if (nr.today.length) parts.push("<b>Сегодня:</b> " + esc(nr.today.map(newsLine).join("; ")) + ". Перед сильной новостью в новые сделки не входим, прибыльные позиции частично фиксируем.");
+  if (nr.tomorrow.length) parts.push("<b>Завтра:</b> " + esc(nr.tomorrow.map(newsLine).join("; ")) + ".");
+  if (!parts.length && nr.all.length) { var e = nr.all[0]; parts.push("Ближайшая важная новость США: <b>" + esc(e.d.toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "short" }) + ", " + newsLine(e)) + "</b>."); }
+  if (!parts.length || hidden) { bar.hidden = true; return; }
+  bar.innerHTML = parts.join(" ") + ' <span class="muted small">Время — ваше местное.' + (nr.all.some(function (x) { return x.rule; }) ? " Даты NFP по правилу «первая пятница» — сверяйте с investing.com." : "") +
+    '</span> <button class="btn ghost small" type="button" id="newsHide">Скрыть до завтра</button>';
+  bar.hidden = false;
+  $("#newsHide").onclick = function () { lsSet("osipov.newsHide", dayKey(new Date())); bar.hidden = true; };
+}
+function sectorLoad(tk) {
+  var sec = (DATA.map[tk] || {}).sec; if (!sec) return 0;
+  return Store.list("trades").filter(function (x) { return (x.status || "open") === "open" && x.ticker !== tk && (DATA.map[x.ticker] || {}).sec === sec; }).length;
+}
+// «Весь сектор смотрит наверх»: доля бумаг сектора с восходящим трендом на MN и W
+function renderSectors() {
+  var box = $("#secBody"); if (!box || !DATA.uni) return;
+  var S = {};
+  DATA.uni.forEach(function (t) {
+    if (!t.sec) return; var x = S[t.sec] = S[t.sec] || { n: 0, m: 0, w: 0, wd: 0, hits: 0, open: 0 };
+    x.n++; if (SC.trend(SC.view(t.M, 1)) === "up") x.m++; var w = SC.trend(SC.view(t.W, 1)); if (w === "up") x.w++; if (w === "down") x.wd++;
+  });
+  (LAST || []).forEach(function (h) { if (S[h.sec]) S[h.sec].hits++; });
+  Store.list("trades").forEach(function (x) { var sec = (DATA.map[x.ticker] || {}).sec; if ((x.status || "open") === "open" && S[sec]) S[sec].open++; });
+  var rows = Object.keys(S).map(function (k) { return [k, S[k]]; }).sort(function (a, b) { return b[1].w / b[1].n - a[1].w / a[1].n; });
+  var pc = function (a, n) { return n ? Math.round(a / n * 100) : 0; };
+  box.innerHTML = '<p class="note">Сектор часто идёт целиком: если почти весь сектор смотрит вверх, ищите в нём лучшую бумагу — самый сильный фундамент и лучшую точку входа. Но не складывайте все сделки в один сектор. Нажмите на сектор — сканер покажет только его.</p>' +
+    '<table class="sectab"><tr><th>Сектор</th><th class="n">Бумаг</th><th class="n">MN вверх</th><th class="n">W вверх</th><th class="n">W вниз</th><th class="n">Находок</th><th class="n">Открыто</th></tr>' +
+    rows.map(function (r) { var x = r[1], wu = pc(x.w, x.n);
+      return '<tr data-sec="' + esc(r[0]) + '"><td>' + esc(r[0]) + (SCFG.sector === r[0] ? ' <span class="tag acc">фильтр</span>' : "") + '</td><td class="n">' + x.n + '</td><td class="n">' + pc(x.m, x.n) + '%</td><td class="n ' + (wu >= 60 ? "pos" : wu <= 30 ? "neg" : "") + '">' + wu + '%</td><td class="n">' + pc(x.wd, x.n) + '%</td><td class="n">' + (x.hits || "") + '</td><td class="n">' + (x.open || "") + "</td></tr>"; }).join("") + "</table>" +
+    (SCFG.sector ? '<div class="row"><button class="btn ghost small" type="button" id="secAll">Показать все сектора</button></div>' : "");
+  $$("#secBody tr[data-sec]").forEach(function (tr) { tr.onclick = function () { SCFG.sector = tr.dataset.sec; $("#oSector").value = SCFG.sector; saveScanCfg(); runScan(); }; });
+  var all = $("#secAll"); if (all) all.onclick = function () { SCFG.sector = ""; $("#oSector").value = ""; saveScanCfg(); runScan(); };
 }
 var saveUiTimer = null;
 function onTradeChange(e) {
@@ -749,6 +854,8 @@ function renderMgmt() {
     else if (pw && pw.own.length >= 3) adv += "<div class='small'><b>Прайс экшен (W): " + us + " слабеют</b> — " + esc(pw.own.join(", ")) + ".</div>";
     if (pd && (pd.ch === "strong-" || pd.against.length)) adv += "<div class='small'><b>Свеча против позиции (D):</b> " + esc(pd.against.length ? pd.against.join(", ") : "большое тело без теней") + ". Если есть слом структуры — закрываем вручную.</div>";
   }
+  var nrm = newsRisk();
+  if ((nrm.today.length || nrm.tomorrow.length) && isFinite(path) && path > 0) adv += "<div class='small'><b>" + (nrm.today.length ? "Сегодня" : "Завтра") + " сильная новость</b> (" + esc((nrm.today.length ? nrm.today : nrm.tomorrow).map(newsLine).join("; ")) + "): прибыльную позицию перед новостью частично фиксируем — новость это казино.</div>";
   if (isFinite(rep) && rep >= 0 && rep <= 14) { adv += "<div class='small'><b>Через " + rep + " дн. отчёт:</b> прибыльную позицию частично фиксируем.</div>"; if (path > 0) cls = "wait"; }
   var mg = t.mg || {}, ml = { third: "пройдена треть", take: "цена у тейка", stop: "цена у стопа" };
   var tg = Object.keys(ml).filter(function (k) { return mg[k]; }).map(function (k) { return ml[k] + " (" + new Date(mg[k]).toLocaleDateString("ru-RU") + ")"; });
@@ -884,6 +991,7 @@ function initGuide() {
   html += sec("Триггеры входа", "<ul><li><b>Ложный пробой</b> (1 свеча, 2 свечи, харами, поглощение) — стоп за ложным пробоем.</li><li><b>Отскок</b> пинбаром или двумя свечами — только с подтверждением сломом на младшем ТФ.</li><li><b>Пробой</b>: с 1-го раза не торгуем, со 2-го — по закрытию свечи, с 3-го — любимая ТВХ.</li><li><b>Ретест</b>: уровни, пробитые с 3-го раза, и уровни слома ретестятся почти всегда.</li></ul>");
   html += sec("RSI (индекс относительной силы)", "<ul><li><b>RSI(14), уровни 30 и 70.</b> Выше 70 — перекупленность, ниже 30 — перепроданность, середина — «зона неинтересно»: сигналов там нет.</li><li><b>Только по тренду.</b> Выход из перепроданности (пересечение 30 снизу вверх) — дополнительное подтверждение запланированной ТВХ: ретест, ложный пробой, нижняя граница флета. В шорт — выход из перекупленности через 70. Против тренда сигнал обманный.</li><li><b>Конвергенция</b> у зоны входа: цена обновила минимум, а RSI — нет (продавцы кончаются). Сильный повод искать покупку.</li><li><b>Дивергенция</b> на максимумах: цена обновила максимум, RSI — нет (покупатель кончился). Фиксируем вручную.</li><li>Перекупленность на <b>D</b> — идут активные покупки. На <b>W и MN</b> — пора думать о фиксации. Все ТФ в перекупленности — продолжение 50/50, лучше фиксировать.</li><li>На акциях D, W, MN редко заходят в зоны — входы по RSI ищите на <b>H4</b> (и H1). Уход H1/H4 в перекупленность по тренду — пошли большие деньги: можно войти раньше закрытия дневной свечи (ближе к концу сессии), стоп короче, без риска гэпа.</li><li>Скользящие (MA) запаздывают: если техника уже дала ложный пробой, а 50 и 200 вот-вот пересекутся — входим по технике, не ждём пересечения.</li><li>RSI, свечи, скользящие — только помощники. Основа — теханализ и фундамент.</li></ul>");
   html += sec("Прайс экшен", "<ul><li><b>Кто контролирует рынок</b> — быки или медведи — видно по свечам и волнам, без индикаторов. Основа: уровни + свечи.</li><li><b>Тренд затухает</b>, если: импульсы короче; импульсы положе; коррекции круче; свечи импульсов мельче; свечи коррекций крупнее. Сканер пишет «покупатели слабеют» или «продавцы выдыхаются».</li><li><b>Контекст и место важнее самой свечи.</b> Пинбар на важном уровне значит много, в середине графика — ничего. Заучивать паттерны не нужно — нужно понимать, что свеча говорит о настроении.</li><li><b>Тело и тени:</b> большое тело без теней — сила; маленькое тело и большие тени — нерешительность; маленькое тело без теней — нет интереса; большое тело с длинными тенями — волатильность. Длинные тени у уровня — отторжение уровня.</li><li><b>Одиночные:</b> марибозу — продолжение; волчок и доджи — неопределённость (доджи сам по себе не сигнал); пинбар — отскок от уровня.</li><li><b>Комбинации:</b> поглощение — сильный разворот, на откатах в тренде годится для добора; утренняя / вечерняя звезда (третья свеча подтверждает, гэп усиливает); молот после падения и повешенный после роста — одна форма, разный смысл (молот надёжнее с бычьей свечой следом); перевёрнутый молот / падающая звезда; пинцет — равные экстремумы после тренда; харами, три внутри, три солдата / вороны.</li><li><b>Факторы слияния:</b> ключевой уровень, свеча-сигнал на нём, тренд, свободное пространство до цели, скользящие рядом, RSI. Каждый ≈ +15–20% к вероятности, но 100% не бывает — стоп всегда. В сканере — метка «слияние N/7» и фильтр.</li><li>На графике стрелки ↑ и ↓ — найденные свечные модели (переключатель «Свечные модели»).</li></ul>");
+  html += sec("Фундамент", "<ul><li><b>Фундамент работает вместе с техникой.</b> График показывает реальных покупателей и продавцов, фундамент — прогноз. Хороший прогноз без разворота на графике — только watchlist и алерт.</li><li><b>Новости.</b> Экономический календарь (investing.com, фильтр «три звезды», США): процентная ставка ФРС, ВВП, Non-Farm Payrolls (первая пятница месяца), инфляция и индексы цен CPI/PCE (двигатель решения по ставке). Важно не само число, а расхождение с прогнозом: прогноз рынок уже заложил.</li><li><b>Правила:</b> новость — казино (примерно треть — без изменений, треть — против нас, треть — за нас). Перед сильной новостью в новые сделки не входим, прибыльные позиции частично фиксируем. По понедельникам не торгуем. Полоса вверху приложения напоминает о новостях на сегодня и завтра.</li><li><b>Под графиком Finviz:</b> EPS и выручка должны расти; число акций — стабильно или снижается (байбэк). Допэмиссия и конвертируемые облигации давят на цену. Ожидаемый рост EPS больше 20% — плюс. EPS растёт, а цена падает — ищем точку разворота. Замедление роста выручки тоже бьёт по цене.</li><li><b>Бета</b> ниже 1 — бумага ходит медленно, деньги «закопаны»: не торгуем (фильтр в сканере). <b>Short float</b> от 10% — топливо: стопы шортистов разгоняют рост. <b>Цель аналитиков</b> — ориентир потенциала.</li><li><b>Процесс автора:</b> технический отбор (от 10 млрд $, MN → W → D, ~50–60 бумаг) → оставить те, где есть ТВХ или алерт (~25) → по каждой запрос к ИИ: последние события, ближайшие события, сравнение с конкурентами, риски (кнопка в панели бумаги) → проверить показатели Finviz → ~15 бумаг на неделю.</li><li><b>Сектора.</b> Сектор часто идёт целиком — выбирайте в нём лучшую бумагу (панель «Сектора» в сканере). Ставка растёт — выигрывают банки и финансы. Диверсифицируйте: автор работает с риском 0,5% и вдвое большим числом бумаг из разных секторов.</li></ul>");
   html += sec("Риск и тейк", "<ul><li>Риск 1% на сделку с комиссией, до ~15 позиций.</li><li>R:R: 1:1 — минус; 1:2 — минимум; цель 1:3+. При 1:3 доля прибыльных 45% — очень хороший результат, 50% — удвоение депозита.</li><li>Тейк — следующий уровень, ~80% пути.</li><li>Перед отчётом не входим, прибыльные позиции частично фиксируем.</li></ul>");
   html += sec("Сопровождение сделки", "<ul><li><b>Стоп двигаем только при новой ТВХ</b> (ретест, пробой, выход из накопления, ложный пробой), лучше с подтверждением на H4. Стоп всегда за последним минимумом — за паттерном последнего входа.</li><li><b>Докупка</b> — отдельная сделка: своя ТВХ, свой стоп, риск от текущего депозита. Тейк общий (по старшему ТФ). Стопы всех прежних частей переносим на стоп докупки: первые части оказываются в безубытке или в плюсе.</li><li><b>У тейка</b>: закрыть всё; или на личном счёте при сильном тренде — закрыть 50% (иногда 80%), стоп в безубыток, тейк убрать и держать по тренду.</li><li><b>Закрыть вручную</b> — если нарисовался максимум (две свечи против нас) и подтверждён слом структуры, а не «кажется». Причину — в журнал.</li><li><b>Правило сейфа</b> (по желанию): путь до тейка делим на 3 части; прошли треть — закрыть 50% и стоп в безубыток, дальше стоп подтягиваем. Лучше работает на W и MN, на форексе и крипте; придумано, чтобы новичок не терял много.</li><li>Сопровождение — ежедневно ~30 минут. Если по журналу «зря закрыл» повторяется — не смотрите в терминал: только стоп или тейк.</li><li>1–2 числа месяца проверяйте закрытие месячных свечей.</li></ul>");
   html += '<p class="note">Конспект обучающего курса для самостоятельной работы, не инвестиционная рекомендация. Графики: TradingView Lightweight Charts™.</p>';
@@ -939,7 +1047,7 @@ function renderSettingsInfo() {
 }
 
 /* ======================= запуск ======================= */
-function renderAll(soft) { renderJournal(soft); renderPlan(soft); }
+function renderAll(soft) { renderJournal(soft); renderPlan(soft); renderNews(); }
 initScan(); initTrade(); initJournal(); initPlan(); initGuide(); initSettings();
 if (!Store.st.prefs) { Store.st.prefs = prefsLocal(); Store.st.prefs.u = 1; lsSet(LS_STATE, Store.st); } // любые настройки с другого устройства новее
 route(); renderAll(); calc(); renderSettingsInfo();

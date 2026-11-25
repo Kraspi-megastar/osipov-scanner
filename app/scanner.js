@@ -171,6 +171,34 @@
     if (x.against.length) warn.push("против нас: " + x.against.join(", "));
     return { ok: ok, warn: warn, info: x };
   }
+  // ---------- фундамент (урок «Фундамент»): то, что автор смотрит под графиком Finviz
+  // f: {b: бета, sf: short float %, tp: цель аналитиков, na: число аналитиков, eg: ожид. рост EPS (доля),
+  //     rg: рост выручки г/г (доля), eq: EPS по кварталам, rq: выручка по кварталам (млрд $), sq: акции (млн)}
+  function yoy(arr) { return arr && arr.length >= 5 && isFinite(arr[0]) && isFinite(arr[4]) && arr[0] !== 0 ? (arr[4] - arr[0]) / Math.abs(arr[0]) : NaN; }
+  function fundInfo(t, sgn) {
+    var f = t.f;
+    if (!f) return null;
+    var epsY = yoy(f.eq), revY = isFinite(f.rg) ? f.rg : yoy(f.rq), shY = yoy(f.sq);
+    var epsUp = (isFinite(epsY) && epsY > 0) || f.eg >= 0.2, epsDown = isFinite(epsY) && epsY < 0 && !(f.eg > 0);
+    var revUp = isFinite(revY) && revY > 0, revDown = isFinite(revY) && revY < 0;
+    var ok = [], warn = [], long = sgn > 0;
+    if (isFinite(f.b)) { if (f.b < 1) warn.push("бета " + f.b.toFixed(2) + " < 1: ходит медленно"); else ok.push("бета " + f.b.toFixed(2)); }
+    if (long) {
+      if (epsUp) ok.push("EPS растёт" + (f.eg >= 0.2 ? " (ожидают +" + Math.round(f.eg * 100) + "%)" : ""));
+      else if (epsDown) warn.push("EPS падает — в лонг осторожно");
+      if (revUp) ok.push("выручка растёт"); else if (revDown) warn.push("выручка падает");
+      if (isFinite(f.sf) && f.sf >= 10) ok.push("short float " + f.sf + "%: топливо для роста");
+    } else {
+      if (epsDown) ok.push("EPS падает"); else if (epsUp) warn.push("EPS растёт — шорт против фундамента");
+      if (revDown) ok.push("выручка падает"); else if (revUp) warn.push("выручка растёт");
+      if (isFinite(f.sf) && f.sf >= 10) warn.push("short float " + f.sf + "%: риск шорт-сквиза");
+    }
+    if (isFinite(shY)) { if (shY <= -0.01) ok.push(long ? "байбэк (акций меньше)" : ""); else if (shY >= 0.03) (long ? warn : ok).push("допэмиссия +" + Math.round(shY * 100) + "% акций"); }
+    var up = isFinite(f.tp) && t.px > 0 ? f.tp / t.px - 1 : NaN;
+    return { ok: ok.filter(Boolean), warn: warn, fav: long ? (epsUp && !revDown) : (epsDown || revDown), betaLow: isFinite(f.b) && f.b < 1,
+      epsY: epsY, revY: revY, shY: shY, up: up, f: f, epsUp: epsUp };
+  }
+
   // Структурные факторы слияния: каждый ≈ +15–20% к вероятности, 100% не бывает
   function confluence(t, tf, sgn, h, rsi, pa) {
     var tfd = t[tf], lvl = h.lvl, A = tfd.a, ma = tfd.ma || {};
@@ -185,6 +213,8 @@
       { k: "rsi", t: "Подтверждение RSI", ok: rsi.ok.length > 0, d: rsi.ok.join(", ") },
       { k: "pa", t: "Прайс экшен за нас (контроль или противник выдыхается)", ok: pa.ok.length > 0, d: pa.ok.join(", ") }
     ];
+    var fu = fundInfo(t, sgn);
+    if (fu) f.push({ k: "fund", t: "Фундамент за нас (EPS, выручка; бета не ниже 1)", ok: fu.fav && !fu.betaLow, d: fu.ok.join(", ") });
     return { n: f.filter(function (x) { return x.ok; }).length, of: f.length, f: f };
   }
 
@@ -404,13 +434,15 @@
           if (cfg.minRR && !(h.pl.rr >= cfg.minRR)) return;
           var ed = daysTo(t.e, cfg.today);
           if (cfg.earnExclude && isFinite(ed) && ed >= 0 && ed <= cfg.earnDays) return;
+          var fu = fundInfo(t, sgn);
+          if (cfg.betaMin && fu && fu.betaLow) return;          // автор: где бета меньше единицы — не торгуем
           var rs = rsiTags(t, cfg.tf, sgn), pa = paTags(t, cfg.tf, sgn), cf = confluence(t, cfg.tf, sgn, h, rs, pa);
           if (cfg.minCf && cf.n < cfg.minCf) return;
           res.push({
             s: t.s, n: t.n, sec: t.sec, mc: t.mc, px: t.px, dir: dir, tf: cfg.tf, k: h.k,
             name: (dir === "long" ? SETUPS : SETUPS_SHORT)[h.k], why: h.why, zone: h.zs.z, dAtr: h.zs.d,
             entry: h.pl.entry, stop: h.pl.stop, take: h.pl.take, level: h.lvl, takeLevel: h.pl.level, rr: h.pl.rr,
-            trg: h.trg, mT: mT, wT: wT, e: t.e || null, eDays: ed, atr: t[cfg.tf].a, rsi: rs, pa: { ok: pa.ok, warn: pa.warn }, cf: cf
+            trg: h.trg, mT: mT, wT: wT, e: t.e || null, eDays: ed, atr: t[cfg.tf].a, rsi: rs, pa: { ok: pa.ok, warn: pa.warn }, cf: cf, fu: fu ? { ok: fu.ok, warn: fu.warn, up: fu.up } : null
           });
         });
       });
@@ -432,6 +464,6 @@
     return out;
   }
 
-  var api = { scan: scan, scanTicker: scanTicker, trend: trend, view: view, phase: phase, rsiInfo: rsiInfo, rsiTags: rsiTags, paInfo: paInfo, paTags: paTags, candlesFor: candlesFor, CANDLES: CANDLES, CH_TEXT: CH_TEXT, SETUPS: SETUPS, SETUPS_SHORT: SETUPS_SHORT };
+  var api = { scan: scan, scanTicker: scanTicker, trend: trend, view: view, phase: phase, rsiInfo: rsiInfo, rsiTags: rsiTags, paInfo: paInfo, paTags: paTags, fundInfo: fundInfo, candlesFor: candlesFor, CANDLES: CANDLES, CH_TEXT: CH_TEXT, SETUPS: SETUPS, SETUPS_SHORT: SETUPS_SHORT };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.OsipovScanner = api;
 })(this);
